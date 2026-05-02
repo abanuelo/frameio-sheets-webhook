@@ -107,3 +107,26 @@ def webhook():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify(status='ok'), 200
+
+@app.route('/debug', methods=['GET'])
+def debug():
+    return jsonify({
+        'has_signing_secret': bool(os.environ.get('FRAMEIO_SIGNING_SECRET')),
+        'has_sheet_id': bool(os.environ.get('SHEET_ID')),
+        'has_google_creds': bool(os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')),
+        'sheet_id_length': len(os.environ.get('SHEET_ID', '')),
+    }), 200
+
+@app.route('/test-write', methods=['POST'])
+def test_write():
+    fake_event = {
+        'created_at': '2026-05-02T12:00:00Z',
+        'type': 'test.event',
+        'resource': {'id': 'test-123', 'name': 'test asset', 'status': 'approved'},
+        'user': {'email': 'test@example.com'},
+    }
+    try:
+        write_to_sheet(fake_event)
+        return jsonify(success=True), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
