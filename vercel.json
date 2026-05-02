@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/webhook.py": {
+      "maxDuration": 30,
+      "memory": 512
+    }
+  }
+}
