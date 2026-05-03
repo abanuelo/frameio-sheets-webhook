@@ -52,7 +52,6 @@ def is_duplicate(event_id: str) -> bool:
     _recent_events[event_id] = now
     return False
 
-
 @app.route('/api/webhook', methods=['POST'])
 def webhook():
     raw_body = request.get_data()
@@ -65,34 +64,36 @@ def webhook():
 
     try:
         event = json.loads(raw_body)
+        
+        # TEMP: log full payload for debugging
+        logger.info(f"=== FULL WEBHOOK PAYLOAD ===")
+        logger.info(json.dumps(event, indent=2))
+        logger.info(f"=== END PAYLOAD ===")
+        
         event_id = event.get('id', '')
         
         if is_duplicate(event_id):
             return jsonify(received=True, duplicate=True), 200
 
-        # 1. Always log to events tab
         try:
             append_event_row(event)
         except Exception as e:
             logger.exception(f"Failed to append event row: {e}")
 
-        # 2. Enrich and update project tab if applicable
         try:
             handle_event(event)
         except Exception as e:
-            # Don't fail the webhook if enrichment fails
             logger.exception(f"Enrichment failed: {e}")
 
         return jsonify(received=True), 200
 
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON: {e}")
-        return 'bad request', 200  # Don't retry on bad JSON
+        return 'bad request', 200
 
     except Exception as e:
         logger.exception(f"Unexpected error: {e}")
         return 'internal error', 500
-
 
 @app.route('/health', methods=['GET'])
 @app.route('/', methods=['GET'])
