@@ -59,17 +59,17 @@ def append_event_row(event: dict):
     
     row = [
         event.get('type', ''),
-        event.get('id', ''),
         timestamp,
         json.dumps(event)[:50000],  # cell limit safety
     ]
     
     svc.spreadsheets().values().append(
         spreadsheetId=SHEET_ID,
-        range=f"'{EVENTS_TAB}'!A:D",  # was A:C, now A:D
+        range=f"'{EVENTS_TAB}'!A:C",
         valueInputOption='USER_ENTERED',
         body={'values': [row]}
     ).execute()
+    logger.info(f"Appended event {event.get('type')} to {EVENTS_TAB}")
 
 
 def find_row_by_production_id(svc, project_tab: str, production_id: str):
