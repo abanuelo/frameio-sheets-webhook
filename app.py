@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import time
 import logging
+import requests
 from flask import Flask, request, jsonify
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -130,3 +131,47 @@ def test_write():
         return jsonify(success=True), 200
     except Exception as e:
         return jsonify(error=str(e)), 500
+
+@app.route('/oauth/callback', methods=['GET'])
+def oauth_callback():
+    """One-time use route to capture the authorization code from Adobe IMS."""
+    code = request.args.get('code')
+    error = request.args.get('error')
+    
+    if error:
+        return f"OAuth error: {error}", 400
+    
+    if not code:
+        return "Missing authorization code", 400
+    
+    # Exchange the code for tokens
+    response = requests.post(
+        'https://ims-na1.adobelogin.com/ims/token/v3',
+        data={
+            'grant_type': 'authorization_code',
+            'client_id': os.environ['ADOBE_CLIENT_ID'],
+            'client_secret': os.environ['ADOBE_CLIENT_SECRET'],
+            'code': code,
+        },
+        timeout=10,
+    )
+    
+    if response.status_code != 200:
+        return f"Token exchange failed: {response.text}", 500
+    
+    tokens = response.json()
+    
+    # Display the refresh token so you can copy it into env vars
+    # SECURITY: Remove this route after you've captured the token!
+    return f"""
+    <html>
+    <body style="font-family: monospace; padding: 20px;">
+    <h2>Save this refresh_token as ADOBE_REFRESH_TOKEN in Vercel:</h2>
+    <textarea style="width:100%; height:100px;">{tokens.get('refresh_token', '')}</textarea>
+    <h3>Access token (short-lived, just for verification):</h3>
+    <textarea style="width:100%; height:100px;">{tokens.get('access_token', '')}</textarea>
+    <p>Expires in: {tokens.get('expires_in')} seconds</p>
+    <p style="color:red"><strong>DELETE THIS ROUTE after you save the refresh token!</strong></p>
+    </body>
+    </html>
+    """
