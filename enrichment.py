@@ -70,22 +70,21 @@ def handle_event(event: dict):
     
     metadata = parse_metadata(file_data)
     
-    # Build the sheet update payload — only fields we sync from Frame.io
+    # Filename goes into the Production ID column
+    filename = file_data.get('name', '')
+    
     updates = {
         'frameio_file_id': file_id,
-        'name': file_data.get('name', ''),
+        'production_id': filename,  # filename → Production ID column
     }
     
+    # Map remaining Frame.io metadata fields to sheet columns
     for fio_field_name, sheet_key in METADATA_FIELD_TO_SHEET_KEY.items():
         if fio_field_name in metadata:
             value = metadata[fio_field_name]
             if isinstance(value, list):
                 continue
             updates[sheet_key] = value
-    
-    # Production ID fallback: try filename if not set as metadata
-    if not updates.get('production_id'):
-        updates['production_id'] = _extract_production_id_from_filename(updates['name'])
     
     project_tab = _project_tab_name(file_data)
     if not project_tab:
