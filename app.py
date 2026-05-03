@@ -70,6 +70,75 @@ def webhook():
         logger.exception(f"Unexpected error: {e}")
         return 'internal error', 500
 
+@app.route('/oauth/callback', methods=['GET'])
+def oauth_callback():
+    """
+    One-time OAuth callback for capturing a fresh refresh token.
+    
+    Disabled by default. To re-enable for token refresh:
+    1. Set OAUTH_CALLBACK_ENABLED=true in Vercel env vars
+    2. Redeploy
+    3. Visit the consent URL in your browser
+    4. Capture the refresh token
+    5. Update ADOBE_REFRESH_TOKEN env var
+    6. Set OAUTH_CALLBACK_ENABLED=false (or remove it)
+    7. Redeploy
+    """
+    if os.environ.get('OAUTH_CALLBACK_ENABLED', '').lower() != 'true':
+        return 'OAuth callback disabled. Set OAUTH_CALLBACK_ENABLED=true to enable.', 403
+    
+    code = request.args.get('code')
+    error = request.args.get('error')
+    
+    if error:
+        return f"OAuth error: {error}", 400
+    if not code:
+        return "Missing authorization code", 400
+    
+    try:
+        response = requests.post(
+            'https://ims-na1.adobelogin.com/ims/token/v3',
+            data={
+                'grant_type': 'authorization_code',
+                'client_id': os.environ['ADOBE_CLIENT_ID'],
+                'client_secret': os.environ['ADOBE_CLIENT_SECRET'],
+                'code': code,
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        return f"Network error: {e}", 500
+    
+    if response.status_code != 200:
+        return f"Token exchange failed: {response.text}", 500
+    
+    tokens = response.json()
+    
+    return f"""
+    <html>
+    <body style="font-family: monospace; padding: 20px; background: #f5f5f5;">
+    <h2>OAuth Token Captured</h2>
+    
+    <h3>Refresh Token (save as ADOBE_REFRESH_TOKEN in Vercel):</h3>
+    <textarea style="width:100%; height:120px; font-family: monospace;">{tokens.get('refresh_token', '')}</textarea>
+    
+    <h3>Granted Scopes:</h3>
+    <pre>{tokens.get('scope', 'NOT RETURNED')}</pre>
+    
+    <h3>Access Token (short-lived, just for verification):</h3>
+    <textarea style="width:100%; height:80px; font-family: monospace;">{tokens.get('access_token', '')}</textarea>
+    
+    <p>Expires in: {tokens.get('expires_in')} seconds</p>
+    
+    <hr>
+    <p style="color:red; font-weight:bold;">
+        ⚠ Once you've saved the refresh token, set OAUTH_CALLBACK_ENABLED=false 
+        (or remove it) in Vercel env vars and redeploy. Leaving this route open 
+        is a security risk.
+    </p>
+    </body>
+    </html>
+    """
 
 @app.route('/health', methods=['GET'])
 @app.route('/', methods=['GET'])
