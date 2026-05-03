@@ -9,57 +9,40 @@ logger = logging.getLogger(__name__)
 ADOBE_IMS_TOKEN_URL = "https://ims-na1.adobelogin.com/ims/token/v3"
 FRAMEIO_API_BASE = "https://api.frame.io/v4"
 
-# Cached across warm invocations on Vercel
 _token_cache = {"access_token": None, "expires_at": 0}
 
 
 def get_access_token() -> str:
-    """Exchange refresh_token for short-lived access_token, with caching."""
-    # Return cached token if still valid (with 60s buffer)
     if _token_cache["access_token"] and time.time() < _token_cache["expires_at"] - 60:
         return _token_cache["access_token"]
-
-    client_id = os.environ['ADOBE_CLIENT_ID']
-    client_secret = os.environ['ADOBE_CLIENT_SECRET']
-    refresh_token = os.environ['ADOBE_REFRESH_TOKEN']
 
     response = requests.post(
         ADOBE_IMS_TOKEN_URL,
         data={
             'grant_type': 'refresh_token',
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'refresh_token': refresh_token,
+            'client_id': os.environ['ADOBE_CLIENT_ID'],
+            'client_secret': os.environ['ADOBE_CLIENT_SECRET'],
+            'refresh_token': os.environ['ADOBE_REFRESH_TOKEN'],
         },
         timeout=10,
     )
     
     if response.status_code != 200:
         logger.error(f"Token refresh failed: {response.status_code} {response.text}")
-        # If refresh token is invalid, this is fatal - need manual re-consent
         raise RuntimeError(f"Failed to refresh access token: {response.text}")
 
     data = response.json()
-    
     _token_cache["access_token"] = data['access_token']
     _token_cache["expires_at"] = time.time() + data['expires_in']
     
-    # IMPORTANT: Adobe sometimes returns a new refresh_token
     new_refresh = data.get('refresh_token')
-    if new_refresh and new_refresh != refresh_token:
-        # Log loudly - you need to update the env var manually
-        logger.warning(
-            "Adobe rotated the refresh token. "
-            "Update ADOBE_REFRESH_TOKEN in Vercel to: %s",
-            new_refresh
-        )
+    if new_refresh and new_refresh != os.environ['ADOBE_REFRESH_TOKEN']:
+        logger.warning("Adobe rotated the refresh token. Update ADOBE_REFRESH_TOKEN to: %s", new_refresh)
     
-    logger.info(f"Got new access token, expires in {data['expires_in']}s")
     return _token_cache["access_token"]
 
 
 def _api_call(method: str, path: str, **kwargs):
-    """Make an authenticated API call to Frame.io."""
     token = get_access_token()
     headers = kwargs.pop('headers', {})
     headers['Authorization'] = f'Bearer {token}'
@@ -69,7 +52,6 @@ def _api_call(method: str, path: str, **kwargs):
     response = requests.request(method, url, headers=headers, timeout=10, **kwargs)
     
     if response.status_code == 401:
-        # Access token might be stale — invalidate cache and retry once
         _token_cache["access_token"] = None
         _token_cache["expires_at"] = 0
         token = get_access_token()
@@ -80,29 +62,50 @@ def _api_call(method: str, path: str, **kwargs):
     return response.json()
 
 
-def get_accounts():
-    """List accounts the authenticated user has access to."""
-    return _api_call('GET', '/accounts')
-
-
-def get_file(account_id: str, file_id: str, include: str = 'metadata') -> dict:
-    """Fetch a file with optional includes (metadata, media_links, etc.)."""
+def get_file(account_id: str, file_id: str) -> dict:
+    """Fetch a file with metadata included."""
     result = _api_call(
         'GET',
         f'/accounts/{account_id}/files/{file_id}',
-        params={'include': include} if include else {}
+        params={'include': 'metadata'}
     )
     return result.get('data', {})
 
 
-def get_file_metadata(account_id: str, file_id: str) -> dict:
-    """Fetch custom metadata fields for a file."""
-    try:
-        result = _api_call('GET', f'/accounts/{account_id}/files/{file_id}/metadata')
-        return result.get('data', {})
-    except requests.HTTPError as e:
-        if e.response.status_code == 500:
-            logger.warning(f"500 fetching metadata for {file_id}, returning empty")
-            return {}
-        raise
-
+def parse_metadata(file_data: dict) -> dict:
+    """
+    Parse Frame.io's metadata array into a flat dict keyed by field_definition_name.
+    
+    Handles different field types:
+    - select: extracts display_name from value[0]
+    - text/number/toggle: returns value as-is
+    - user_single/user_multi: returns list of user IDs (caller can resolve to names)
+    """
+    metadata_array = file_data.get('metadata', [])
+    parsed = {}
+    
+    for field in metadata_array:
+        name = field.get('field_definition_name')
+        if not name:
+            continue
+        
+        ftype = field.get('field_type')
+        value = field.get('value')
+        
+        if ftype == 'select':
+            # value is a list of {display_name, id} objects
+            if isinstance(value, list) and value:
+                parsed[name] = value[0].get('display_name', '')
+            else:
+                parsed[name] = ''
+        elif ftype in ('user_single', 'user_multi'):
+            # value is a list of {id, type} - caller needs to resolve to names
+            if isinstance(value, list):
+                parsed[name] = [u.get('id') for u in value if u.get('id')]
+            else:
+                parsed[name] = []
+        else:
+            # text, number, toggle, date - take value as-is
+            parsed[name] = value if value is not None else ''
+    
+    return parsed
