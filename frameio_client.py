@@ -85,9 +85,13 @@ def get_accounts():
     return _api_call('GET', '/accounts')
 
 
-def get_file(account_id: str, file_id: str) -> dict:
-    """Fetch a file with its built-in fields."""
-    result = _api_call('GET', f'/accounts/{account_id}/files/{file_id}')
+def get_file(account_id: str, file_id: str, include: str = 'metadata') -> dict:
+    """Fetch a file with optional includes (metadata, media_links, etc.)."""
+    result = _api_call(
+        'GET',
+        f'/accounts/{account_id}/files/{file_id}',
+        params={'include': include} if include else {}
+    )
     return result.get('data', {})
 
 
@@ -101,3 +105,4 @@ def get_file_metadata(account_id: str, file_id: str) -> dict:
             logger.warning(f"500 fetching metadata for {file_id}, returning empty")
             return {}
         raise
+

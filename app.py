@@ -211,17 +211,28 @@ def test_token():
 
 @app.route('/test-file/<file_id>', methods=['GET'])
 def test_file(file_id):
-    from frameio_client import get_file, get_file_metadata
+    from frameio_client import _api_call
     account_id = os.environ['FRAMEIO_ACCOUNT_ID']
+    
+    results = {}
+    
+    # Without include (default)
     try:
-        file_data = get_file(account_id, file_id)
-        try:
-            metadata = get_file_metadata(account_id, file_id)
-        except Exception as e:
-            metadata = {'error': str(e)}
-        return jsonify(file=file_data, metadata=metadata), 200
+        results['no_include'] = _api_call('GET', f'/accounts/{account_id}/files/{file_id}')
     except Exception as e:
-        return jsonify(error=str(e)), 500
+        results['no_include_error'] = str(e)
+    
+    # With include=metadata
+    try:
+        results['include_metadata'] = _api_call(
+            'GET',
+            f'/accounts/{account_id}/files/{file_id}',
+            params={'include': 'metadata'}
+        )
+    except Exception as e:
+        results['include_metadata_error'] = str(e)
+    
+    return jsonify(results), 200
     
 @app.route('/test-metadata-fields', methods=['GET'])
 def test_metadata_fields():
