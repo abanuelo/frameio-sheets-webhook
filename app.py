@@ -115,8 +115,11 @@ def debug():
         'has_signing_secret': bool(os.environ.get('FRAMEIO_SIGNING_SECRET')),
         'has_sheet_id': bool(os.environ.get('SHEET_ID')),
         'has_google_creds': bool(os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')),
-        'sheet_id_length': len(os.environ.get('SHEET_ID', '')),
+        'has_adobe_client_id': bool(os.environ.get('ADOBE_CLIENT_ID')),
+        'has_adobe_client_secret': bool(os.environ.get('ADOBE_CLIENT_SECRET')),
+        'has_adobe_refresh_token': bool(os.environ.get('ADOBE_REFRESH_TOKEN')),
     }), 200
+
 
 @app.route('/test-write', methods=['POST'])
 def test_write():
