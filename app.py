@@ -178,3 +178,12 @@ def oauth_callback():
     </body>
     </html>
     """
+
+@app.route('/test-frameio', methods=['GET'])
+def test_frameio():
+    try:
+        from frameio_client import get_accounts
+        result = get_accounts()
+        return jsonify(success=True, data=result), 200
+    except Exception as e:
+        return jsonify(success=False, error=str(e)), 500
