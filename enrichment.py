@@ -2,7 +2,7 @@
 import os
 import re
 import logging
-from frameio_client import get_file, parse_metadata
+from frameio_client import get_file, parse_metadata, get_project
 from sheets_writer import upsert_project_row
 
 logger = logging.getLogger(__name__)
@@ -99,3 +99,20 @@ def handle_event(event: dict):
     except Exception as e:
         logger.exception(f"Failed to update sheet for file {file_id}: {e}")
         return False
+    
+def _project_tab_name(file_data: dict) -> str:
+    """Get project name. Falls back to fetching project by ID if not embedded."""
+    project = file_data.get('project') or {}
+    if project.get('name'):
+        return project['name'].strip()
+    
+    project_id = file_data.get('project_id')
+    if not project_id:
+        return ''
+    
+    try:
+        project_data = get_project(ACCOUNT_ID, project_id)
+        return project_data.get('name', '').strip()
+    except Exception as e:
+        logger.warning(f"Couldn't fetch project {project_id}: {e}")
+        return ''

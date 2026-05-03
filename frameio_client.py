@@ -109,3 +109,8 @@ def parse_metadata(file_data: dict) -> dict:
             parsed[name] = value if value is not None else ''
     
     return parsed
+
+def get_project(account_id: str, project_id: str) -> dict:
+    """Fetch a project by ID."""
+    result = _api_call('GET', f'/accounts/{account_id}/projects/{project_id}')
+    return result.get('data', {})
