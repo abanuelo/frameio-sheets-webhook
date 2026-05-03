@@ -99,3 +99,55 @@ def webhook():
 @app.route('/', methods=['GET'])
 def health():
     return jsonify(status='ok'), 200
+
+@app.route('/test-enrich/<file_id>', methods=['GET'])
+def test_enrich(file_id):
+    """Manually trigger enrichment for a file and return what happened."""
+    from frameio_client import get_file, parse_metadata
+    from enrichment import handle_event, METADATA_FIELD_TO_SHEET_KEY, _extract_production_id_from_filename
+    from sheets_writer import upsert_project_row
+    
+    account_id = os.environ['FRAMEIO_ACCOUNT_ID']
+    
+    debug = {}
+    
+    try:
+        file_data = get_file(account_id, file_id)
+        debug['file_name'] = file_data.get('name')
+        debug['project_id'] = file_data.get('project_id')
+        debug['project_name_from_object'] = (file_data.get('project') or {}).get('name')
+        
+        metadata = parse_metadata(file_data)
+        debug['parsed_metadata_keys'] = list(metadata.keys())
+        debug['parsed_metadata'] = metadata
+        
+        # Build updates the same way handle_event does
+        updates = {
+            'frameio_file_id': file_id,
+            'name': file_data.get('name', ''),
+        }
+        for fio_field_name, sheet_key in METADATA_FIELD_TO_SHEET_KEY.items():
+            if fio_field_name in metadata:
+                value = metadata[fio_field_name]
+                if isinstance(value, list):
+                    continue
+                updates[sheet_key] = value
+        
+        if not updates.get('production_id'):
+            updates['production_id'] = _extract_production_id_from_filename(updates['name'])
+        
+        debug['updates_to_write'] = updates
+        debug['target_tab'] = (file_data.get('project') or {}).get('name', '').strip()
+        
+        # Try the actual write
+        try:
+            result = upsert_project_row(debug['target_tab'] or 'Test', updates)
+            debug['write_result'] = result
+        except Exception as e:
+            debug['write_error'] = str(e)
+        
+        return jsonify(debug), 200
+        
+    except Exception as e:
+        debug['error'] = str(e)
+        return jsonify(debug), 500
