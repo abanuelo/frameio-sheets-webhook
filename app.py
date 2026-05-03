@@ -208,3 +208,27 @@ def test_token():
         return jsonify(error="not a JWT", token_first_50=token[:50]), 500
     except Exception as e:
         return jsonify(error=str(e)), 500
+
+@app.route('/test-file/<file_id>', methods=['GET'])
+def test_file(file_id):
+    from frameio_client import get_file, get_file_metadata
+    account_id = os.environ['FRAMEIO_ACCOUNT_ID']
+    try:
+        file_data = get_file(account_id, file_id)
+        try:
+            metadata = get_file_metadata(account_id, file_id)
+        except Exception as e:
+            metadata = {'error': str(e)}
+        return jsonify(file=file_data, metadata=metadata), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    
+@app.route('/test-metadata-fields', methods=['GET'])
+def test_metadata_fields():
+    from frameio_client import _api_call
+    account_id = os.environ['FRAMEIO_ACCOUNT_ID']
+    try:
+        result = _api_call('GET', f'/accounts/{account_id}/metadata_fields')
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify(error=str(e)), 500
