@@ -187,3 +187,24 @@ def test_frameio():
         return jsonify(success=True, data=result), 200
     except Exception as e:
         return jsonify(success=False, error=str(e)), 500
+    
+@app.route('/test-token', methods=['GET'])
+def test_token():
+    import base64, json as json_mod
+    from frameio_client import get_access_token
+    
+    try:
+        token = get_access_token()
+        parts = token.split('.')
+        if len(parts) >= 2:
+            payload = parts[1]
+            payload += '=' * (4 - len(payload) % 4)
+            decoded = json_mod.loads(base64.urlsafe_b64decode(payload))
+            return jsonify(
+                token_payload=decoded,
+                scopes_in_token=decoded.get('scope', '').split(',') if decoded.get('scope') else [],
+                token_first_50_chars=token[:50],
+            ), 200
+        return jsonify(error="not a JWT", token_first_50=token[:50]), 500
+    except Exception as e:
+        return jsonify(error=str(e)), 500
