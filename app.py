@@ -138,9 +138,11 @@ def oauth_callback():
 
 @app.route('/test/slack', methods=['GET'])
 def test_slack_config():
-    """GET /test/slack — show which Slack env vars are configured on this deployment."""
+    """GET /test/slack — show config and verify the bot can see the list via files.info."""
+    import requests as req
     import slack_writer as sw
-    return jsonify(
+
+    config = dict(
         list_id=sw.LIST_ID or None,
         token_set=bool(sw.TOKEN),
         col_name=sw.COL_NAME or None,
@@ -149,7 +151,28 @@ def test_slack_config():
         col_pm=sw.COL_PM or None,
         col_status=sw.COL_STATUS or None,
         col_notes=sw.COL_NOTES or None,
-    ), 200
+    )
+
+    # Check if the bot can access the list as a file
+    try:
+        r = req.get(
+            "https://slack.com/api/files.info",
+            headers={"Authorization": f"Bearer {sw.TOKEN}"},
+            params={"file": sw.LIST_ID},
+            timeout=10,
+        )
+        files_info = r.json()
+        config["files_info_ok"] = files_info.get("ok")
+        config["files_info_error"] = files_info.get("error")
+        if files_info.get("ok"):
+            f = files_info.get("file", {})
+            config["file_type"] = f.get("filetype")
+            config["file_channels"] = f.get("channels", [])
+            config["file_groups"] = f.get("groups", [])
+    except Exception as e:
+        config["files_info_exception"] = str(e)
+
+    return jsonify(config), 200
 
 
 @app.route('/test/slack', methods=['POST'])
