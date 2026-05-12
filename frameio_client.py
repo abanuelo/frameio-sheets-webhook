@@ -114,3 +114,35 @@ def get_project(account_id: str, project_id: str) -> dict:
     """Fetch a project by ID."""
     result = _api_call('GET', f'/accounts/{account_id}/projects/{project_id}')
     return result.get('data', {})
+
+
+def get_folder_children(account_id: str, folder_id: str) -> list:
+    """Return all direct children of a folder (files and sub-folders), paginated."""
+    children = []
+    cursor = None
+    while True:
+        params = {'page_size': 50}
+        if cursor:
+            params['after'] = cursor
+        result = _api_call('GET', f'/accounts/{account_id}/folders/{folder_id}/children', params=params)
+        children.extend(result.get('data', []))
+        cursor = result.get('pagination', {}).get('next_cursor') or result.get('next_cursor')
+        if not cursor:
+            break
+    return children
+
+
+def get_file_comments(account_id: str, file_id: str) -> list:
+    """Return all comments for a file including owner info, paginated."""
+    comments = []
+    cursor = None
+    while True:
+        params = {'page_size': 50, 'include': 'owner'}
+        if cursor:
+            params['after'] = cursor
+        result = _api_call('GET', f'/accounts/{account_id}/files/{file_id}/comments', params=params)
+        comments.extend(result.get('data', []))
+        cursor = result.get('pagination', {}).get('next_cursor') or result.get('next_cursor')
+        if not cursor:
+            break
+    return comments
