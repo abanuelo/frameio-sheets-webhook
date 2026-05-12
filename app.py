@@ -318,7 +318,7 @@ def comments_ui():
 
 @app.route('/comments/export', methods=['GET'])
 def comments_export():
-    from frameio_client import get_folder_children, get_file_comments
+    from frameio_client import get_all_files_in_folder, get_file_comments
     folder_id = request.args.get('folder_id', '').strip()
     if not folder_id:
         return 'Missing folder_id parameter', 400
@@ -334,14 +334,12 @@ def comments_export():
         yield buf.getvalue()
 
         try:
-            files = get_folder_children(account_id, folder_id)
+            files = get_all_files_in_folder(account_id, folder_id)
         except Exception as e:
             yield f"# ERROR fetching folder: {e}\n"
             return
 
         for f in files:
-            if f.get('type') == 'folder':
-                continue
             file_id = f.get('id', '')
             file_name = f.get('name', '')
 
