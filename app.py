@@ -326,7 +326,7 @@ def _comment_rows(file_name: str, file_id: str, comments: list) -> list[list]:
         owner = c.get('owner') or {}
         author = owner.get('name') or owner.get('email') or owner.get('id') or 'Unknown'
         rows.append([
-            file_name, file_id, author,
+            file_name, file_id, c.get('id', ''), author,
             c.get('text', ''),
             _seconds_to_timecode(c.get('timestamp')),
             c.get('created_at', ''),
@@ -338,7 +338,7 @@ def _comment_rows(file_name: str, file_id: str, comments: list) -> list[list]:
             r_owner = reply.get('owner') or {}
             r_author = r_owner.get('name') or r_owner.get('email') or r_owner.get('id') or 'Unknown'
             rows.append([
-                file_name, file_id, r_author,
+                file_name, file_id, reply.get('id', ''), r_author,
                 reply.get('text', ''),
                 _seconds_to_timecode(reply.get('timestamp')),
                 reply.get('created_at', ''),
@@ -349,7 +349,7 @@ def _comment_rows(file_name: str, file_id: str, comments: list) -> list[list]:
     return rows
 
 
-_CSV_HEADERS = ['file_name', 'file_id', 'author', 'comment', 'timecode', 'created_at', 'completed', 'is_reply', 'parent_comment_id']
+_CSV_HEADERS = ['file_name', 'file_id', 'comment_id', 'author', 'comment', 'timecode', 'created_at', 'completed', 'is_reply', 'parent_comment_id']
 
 
 @app.route('/comments/debug-pagination', methods=['GET'])
