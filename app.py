@@ -287,7 +287,10 @@ _COMMENTS_UI = """<!DOCTYPE html>
       </div>
       {% endif %}
 
-      <button type="submit">Download CSV</button>
+      <div style="display:flex;gap:10px">
+        <button type="submit" formaction="/comments/scan">Scan &amp; Preview</button>
+        <button type="submit" style="background:#6b7280">Download CSV directly</button>
+      </div>
     </form>
   </div>
 </body>
@@ -316,6 +319,106 @@ def comments_ui():
     return render_template_string(_COMMENTS_UI, folder_id=folder_id, presets=_FOLDER_PRESETS)
 
 
+def _comment_rows(file_name: str, file_id: str, comments: list) -> list[list]:
+    """Flatten a list of comments (plus any nested replies) into CSV rows."""
+    rows = []
+    for c in comments:
+        owner = c.get('owner') or {}
+        author = owner.get('name') or owner.get('email') or owner.get('id') or 'Unknown'
+        rows.append([
+            file_name, file_id, author,
+            c.get('text', ''),
+            _seconds_to_timecode(c.get('timestamp')),
+            c.get('created_at', ''),
+            'Yes' if c.get('completed_at') else 'No',
+            'No',
+            '',
+        ])
+        for reply in c.get('replies', []):
+            r_owner = reply.get('owner') or {}
+            r_author = r_owner.get('name') or r_owner.get('email') or r_owner.get('id') or 'Unknown'
+            rows.append([
+                file_name, file_id, r_author,
+                reply.get('text', ''),
+                _seconds_to_timecode(reply.get('timestamp')),
+                reply.get('created_at', ''),
+                'Yes' if reply.get('completed_at') else 'No',
+                'Yes',
+                c.get('id', ''),
+            ])
+    return rows
+
+
+_CSV_HEADERS = ['file_name', 'file_id', 'author', 'comment', 'timecode', 'created_at', 'completed', 'is_reply', 'parent_comment_id']
+
+
+@app.route('/comments/scan', methods=['GET'])
+def comments_scan():
+    """Stream an HTML progress page showing each file and its comment count."""
+    from frameio_client import get_all_files_in_folder, get_file_comments
+    folder_id = request.args.get('folder_id', '').strip()
+    if not folder_id:
+        return 'Missing folder_id parameter', 400
+    account_id = os.environ.get('FRAMEIO_ACCOUNT_ID', '')
+    if not account_id:
+        return 'FRAMEIO_ACCOUNT_ID not configured', 500
+
+    def generate():
+        yield f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>Scanning folder…</title>
+<style>
+  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f5f5f7;margin:0;padding:40px 20px}}
+  .card{{background:#fff;border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.1);max-width:700px;margin:0 auto;padding:32px}}
+  h1{{font-size:1.2rem;margin:0 0 4px}}
+  p.sub{{color:#666;font-size:.85rem;margin:0 0 24px}}
+  table{{width:100%;border-collapse:collapse;font-size:.875rem}}
+  th{{text-align:left;padding:6px 8px;border-bottom:2px solid #e5e7eb;color:#374151}}
+  td{{padding:6px 8px;border-bottom:1px solid #f3f4f6;word-break:break-all}}
+  .count{{text-align:right;font-weight:600}}
+  .err{{color:#dc2626}}
+  .summary{{margin-top:20px;font-weight:600;font-size:.95rem}}
+  .dl{{display:inline-block;margin-top:16px;background:#2563eb;color:#fff;padding:10px 22px;
+       border-radius:6px;text-decoration:none;font-weight:600}}
+  .dl:hover{{background:#1d4ed8}}
+</style></head><body><div class="card">
+<h1>Scanning folder…</h1>
+<p class="sub">Folder: {folder_id}</p>
+<table><thead><tr><th>#</th><th>File</th><th>Type</th><th class="count">Comments</th></tr></thead><tbody>"""
+
+        try:
+            files = get_all_files_in_folder(account_id, folder_id)
+        except Exception as e:
+            yield f'<tr><td colspan="4" class="err">ERROR fetching folder: {e}</td></tr>'
+            yield '</tbody></table></div></body></html>'
+            return
+
+        total_comments = 0
+        total_replies = 0
+        for i, f in enumerate(files, 1):
+            fid = f.get('id', '')
+            fname = f.get('name', 'Unknown')
+            ftype = f.get('type', '')
+            try:
+                comments = get_file_comments(account_id, fid)
+                n_comments = len(comments)
+                n_replies = sum(len(c.get('replies', [])) for c in comments)
+                total_comments += n_comments
+                total_replies += n_replies
+                count_str = f'{n_comments} comment{"s" if n_comments != 1 else ""}'
+                if n_replies:
+                    count_str += f' + {n_replies} repl{"ies" if n_replies != 1 else "y"}'
+                yield f'<tr><td>{i}</td><td>{fname}</td><td>{ftype}</td><td class="count">{count_str}</td></tr>'
+            except Exception as e:
+                yield f'<tr><td>{i}</td><td>{fname}</td><td>{ftype}</td><td class="err">ERROR: {e}</td></tr>'
+
+        yield f"""</tbody></table>
+<p class="summary">Found {len(files)} file(s) — {total_comments} comment(s), {total_replies} repl(ies) total.</p>
+<a class="dl" href="/comments/export?folder_id={folder_id}">Download CSV</a>
+</div></body></html>"""
+
+    return Response(generate(), mimetype='text/html')
+
+
 @app.route('/comments/export', methods=['GET'])
 def comments_export():
     from frameio_client import get_all_files_in_folder, get_file_comments
@@ -330,7 +433,7 @@ def comments_export():
     def generate():
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(['file_name', 'file_id', 'author', 'comment', 'timecode', 'created_at', 'completed'])
+        writer.writerow(_CSV_HEADERS)
         yield buf.getvalue()
 
         try:
@@ -342,24 +445,16 @@ def comments_export():
         for f in files:
             file_id = f.get('id', '')
             file_name = f.get('name', '')
-
             try:
                 comments = get_file_comments(account_id, file_id)
             except Exception as e:
                 logger.warning(f"Could not fetch comments for {file_id}: {e}")
                 continue
 
-            for c in comments:
-                owner = c.get('owner') or {}
-                author = owner.get('name') or owner.get('email') or owner.get('id') or 'Unknown'
-                text = c.get('text', '')
-                timecode = _seconds_to_timecode(c.get('timestamp'))
-                created_at = c.get('created_at', '')
-                completed = 'Yes' if c.get('completed_at') else 'No'
-
+            for row in _comment_rows(file_name, file_id, comments):
                 buf.seek(0)
                 buf.truncate()
-                writer.writerow([file_name, file_id, author, text, timecode, created_at, completed])
+                writer.writerow(row)
                 yield buf.getvalue()
 
     filename = f"comments_{folder_id[:8]}.csv"

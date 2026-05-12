@@ -159,10 +159,6 @@ def _next_cursor(result: dict) -> str | None:
     )
 
 
-# Asset types that support comments — skip everything else
-_COMMENTABLE_TYPES = {'file', 'video', 'image', 'document', 'audio'}
-
-
 def get_folder_children(account_id: str, folder_id: str) -> list:
     """Return direct children of a folder (files + sub-folders), fully paginated."""
     children = []
@@ -183,23 +179,22 @@ def get_folder_children(account_id: str, folder_id: str) -> list:
 
 
 def get_all_files_in_folder(account_id: str, folder_id: str) -> list:
-    """Recursively return every commentable file under a folder, including sub-folders."""
+    """Recursively return every non-folder asset under a folder."""
     files = []
     for item in get_folder_children(account_id, folder_id):
-        item_type = item.get('type', '')
-        if item_type == 'folder':
+        if item.get('type') == 'folder':
             files.extend(get_all_files_in_folder(account_id, item['id']))
-        elif item_type in _COMMENTABLE_TYPES or item_type not in {'review_link', 'version_stack'}:
+        else:
             files.append(item)
     return files
 
 
 def get_file_comments(account_id: str, file_id: str) -> list:
-    """Return all comments for a file including owner info, fully paginated."""
+    """Return all top-level comments (with replies and owner) for a file, fully paginated."""
     comments = []
     cursor = None
     while True:
-        params = {'page_size': 50, 'include': 'owner'}
+        params = {'page_size': 50, 'include': 'owner,replies'}
         if cursor:
             params['after'] = cursor
         result = _api_call('GET', f'/accounts/{account_id}/files/{file_id}/comments', params=params)
