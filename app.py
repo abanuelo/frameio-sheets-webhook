@@ -81,7 +81,11 @@ def oauth_start():
     if not client_id:
         return 'ADOBE_CLIENT_ID not configured', 500
 
-    callback_url = request.url_root.rstrip('/') + '/oauth/callback'
+    # Force https — Vercel proxies requests as http internally but the public URL is https
+    base = request.url_root.rstrip('/')
+    if base.startswith('http://') and 'localhost' not in base:
+        base = 'https://' + base[len('http://'):]
+    callback_url = base + '/oauth/callback'
     params = urlencode({
         'client_id': client_id,
         'scope': 'openid,AdobeID,frame.io',
