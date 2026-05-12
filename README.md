@@ -1,6 +1,6 @@
-# Frame.io → Google Sheets Webhook
+# Frame.io → Slack List Webhook
 
-Automatically syncs Frame.io asset activity to a Google Sheet. When a new file is uploaded it appears as a new row. When metadata fields on an existing asset change, the corresponding row is updated in place.
+Automatically syncs Frame.io asset activity to a Slack List in a private channel. When a new file is uploaded it appears as a new row. When metadata fields on an existing asset change, the corresponding row is updated in place.
 
 ---
 
@@ -12,10 +12,10 @@ Automatically syncs Frame.io asset activity to a Google Sheet. When a new file i
    - [Deploy to Vercel](#1-deploy-to-vercel)
    - [Configure the Frame.io Webhook](#2-configure-the-frameio-webhook)
    - [Adobe Developer Console (Frame.io API)](#3-adobe-developer-console-frameio-api)
-   - [Google Service Account](#4-google-service-account)
-4. [Sheet Structure](#sheet-structure)
-5. [Customizing the Sheet Columns](#customizing-the-sheet-columns)
-6. [Metadata Field Names Must Match Frame.io Exactly](#metadata-field-names-must-match-frameio-exactly)
+   - [Slack App Setup](#4-slack-app-setup)
+   - [Discover Column and Option IDs](#5-discover-column-and-option-ids)
+4. [List Structure](#list-structure)
+5. [Metadata Field Names Must Match Frame.io Exactly](#metadata-field-names-must-match-frameio-exactly)
 
 ---
 
@@ -27,8 +27,6 @@ Frame.io event
       ▼
 POST /api/webhook          ← app.py verifies HMAC signature
       │
-      ├─► append_event_row()   ← always writes to "webhook events" tab (raw log)
-      │
       └─► handle_event()       ← enrichment.py
                │
                ├─ Skips events not in ENRICHMENT_EVENTS list
@@ -36,22 +34,22 @@ POST /api/webhook          ← app.py verifies HMAC signature
                │
                ├─ Fetches full file data from Frame.io API (includes metadata fields)
                │
-               ├─ Maps Frame.io metadata field names → sheet column keys
+               ├─ Maps Frame.io metadata field names → Slack list column keys
                │
-               └─► upsert_project_row()   ← sheets_writer.py
+               └─► upsert_list_item()   ← slack_writer.py
                         │
-                        ├─ Looks up row by Production ID  ──► found → UPDATE cells
-                        ├─ Falls back to Frame.io File ID ──► found → UPDATE cells
-                        └─ No match ─────────────────────────────► INSERT new row
+                        ├─ Searches list for matching Frame.io File ID
+                        ├─ Found ──────────────────────────────► UPDATE row
+                        └─ Not found ──────────────────────────► INSERT new row
 ```
 
 ### New Asset Uploaded
 
-When a file is uploaded to Frame.io a `file.created` or `file.ready` event fires. The webhook fetches the full file record, finds the matching Google Sheet tab by **project name**, and — if no row exists yet for that file — **appends a new row** with all available metadata.
+When a file is uploaded to Frame.io a `file.created` or `file.ready` event fires. The webhook fetches the full file record and, if no row exists yet for that file ID, **creates a new row** in the Slack list with all available metadata.
 
 ### Metadata Field Changed
 
-When someone edits a custom metadata field on an existing asset a `metadata.value.updated` event fires. The webhook fetches the updated file, locates the existing row (first by Production ID, then by Frame.io File ID), and **updates only the changed cells** — blank values are never written back, so manually managed columns (Speaker, Release, Editor) are preserved.
+When someone edits a custom metadata field on an existing asset a `metadata.value.updated` event fires. The webhook fetches the updated file, locates the existing row by Frame.io File ID, and **updates only the changed cells**. Fields not managed by Frame.io are left untouched.
 
 ---
 
@@ -59,6 +57,8 @@ When someone edits a custom metadata field on an existing asset a `metadata.valu
 
 > [!IMPORTANT]
 > All variables below are required in production. Add them under **Vercel → Project Settings → Environment Variables → Production** before deploying. A missing variable will cause the app to crash on startup.
+
+### Frame.io / Adobe
 
 | Variable | Where to get it | Notes |
 |---|---|---|
@@ -68,8 +68,29 @@ When someone edits a custom metadata field on an existing asset a `metadata.valu
 | `ADOBE_CLIENT_SECRET` | Adobe Developer Console → your project | OAuth app credentials |
 | `ADOBE_REFRESH_TOKEN` | Captured via the one-time `/oauth/callback` flow (see below) | Long-lived token; rotate if Adobe warns you it changed |
 | `OAUTH_CALLBACK_ENABLED` | Set manually | `true` only during the one-time OAuth setup, then set to `false` |
-| `SHEET_ID` | Google Sheets URL: `…/d/<this value>/edit` | ID of the target spreadsheet |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | GCP Console → Service Accounts → Keys → JSON | Paste the **entire JSON file contents** as the value |
+
+### Slack Lists
+
+| Variable | Where to get it | Notes |
+|---|---|---|
+| `SLACK_BOT_TOKEN` | Slack API → OAuth & Permissions → Bot User OAuth Token | Starts with `xoxb-` |
+| `SLACK_LIST_ID` | The final segment of the Slack list URL | e.g. `F0B2ZR12X43` |
+| `SLACK_COL_NAME` | Run `discover_schema.py` | Column ID for the Name (Production ID) column |
+| `SLACK_COL_FILE_ID` | Run `discover_schema.py` | Column ID for the Frame.io File ID column |
+| `SLACK_COL_SME` | Run `discover_schema.py` | Column ID for the SME column |
+| `SLACK_COL_PM` | Run `discover_schema.py` | Column ID for the PM column |
+| `SLACK_COL_STATUS` | Run `discover_schema.py` | Column ID for the Status column |
+| `SLACK_COL_NOTES` | Run `discover_schema.py` | Column ID for the Notes column |
+| `SLACK_OPT_NEEDS_REVIEW` | Run `discover_schema.py` | Option ID for "Needs Review" (SME/PM) |
+| `SLACK_OPT_IN_PROGRESS` | Run `discover_schema.py` | Option ID for "In Progress" (SME/PM) |
+| `SLACK_OPT_APPROVED` | Run `discover_schema.py` | Option ID for "Approved" (SME/PM) |
+| `SLACK_OPT_NA` | Run `discover_schema.py` | Option ID for "N/A" (SME/PM) |
+| `SLACK_STATUS_OPT_ROUGH_CUT_READY` | Run `discover_schema.py` | Option ID for "Rough Cut Ready" (Status) |
+| `SLACK_STATUS_OPT_R1_COMMENTS` | Run `discover_schema.py` | Option ID for "R1 Comments" (Status) |
+| `SLACK_STATUS_OPT_R2_COMMENTS` | Run `discover_schema.py` | Option ID for "R2 Comments" (Status) |
+| `SLACK_STATUS_OPT_R2_EDITS` | Run `discover_schema.py` | Option ID for "R2 Edits" (Status) |
+| `SLACK_STATUS_OPT_APPROVALS` | Run `discover_schema.py` | Option ID for "Approvals" (Status) |
+| `SLACK_STATUS_OPT_FULL_LENGTH_LECTURE` | Run `discover_schema.py` | Option ID for "Full Length Lecture" (Status) |
 
 > [!NOTE]
 > `ADOBE_REFRESH_TOKEN` can rotate. If the Frame.io API starts returning 401 errors, check Vercel logs — the app will log a warning with the new token value. Update the env var and redeploy.
@@ -125,103 +146,85 @@ You will receive a **client_id** and **client_secret** — save these as `ADOBE_
 
 Lastly, on your [Frame.io profile settings](https://next.frame.io/settings/profile) click **Manage on Adobe** to confirm the Adobe Developer app is linked to your Frame.io account.
 
-### 4. Google Service Account
+### 4. Slack App Setup
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create or select a project.
-2. Under **APIs & Services**, enable the **Google Sheets API**.
-3. Go to **IAM & Admin → Service Accounts** → **Create service account**.
-4. Grant the service account the **Owner** role (or at minimum Editor).
-5. Share your target Google Sheet with the service account email (`<name>@<project>.iam.gserviceaccount.com`) as **Editor**.
-6. Get the Sheet ID from the URL (`…/d/<sheet-id>/edit`) and save it as `SHEET_ID`.
-7. On the service account row, go to **Keys → Add Key → Create new key → JSON**. A file downloads — paste its entire contents as `GOOGLE_SERVICE_ACCOUNT_JSON` in Vercel.
+**Create the app:**
 
-Redeploy after adding these variables.
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From scratch**.
+2. Name it (e.g. `FrameIO Webhook`) and select your workspace.
 
----
+**Add OAuth scopes** (OAuth & Permissions → Bot Token Scopes):
 
-## Sheet Structure
-
-Here is the [sheet template](https://docs.google.com/spreadsheets/d/12UlLo53JBk9GBMfgaz0-QzQyEAPchjoyN10nXYP9Ma4/edit?usp=sharing).
-
-> [!IMPORTANT]
-> **Project tab names must exactly match the Frame.io project name.** The app looks up the tab by calling `project.name` from the Frame.io API response. If there is no matching tab, the event is silently skipped.
-
-The spreadsheet has two kinds of tabs:
-
-**Project tabs** (one per Frame.io project, name must match exactly):
-
-| Column | Letter | Field | Managed by |
-|---|---|---|---|
-| Status | A | `Overall Video Status` metadata field | Frame.io |
-| Frame.io File ID | B | Asset ID from Frame.io | Automatic |
-| Production ID | C | Asset filename from Frame.io | Automatic |
-| Name | D | *(currently unused — reserved)* | Manual |
-| Release | E | Release label | Manual |
-| Speaker | F | Speaker name | Manual |
-| SME | G | `SME` metadata field | Frame.io |
-| PM | H | `PM` metadata field | Frame.io |
-| Notes | I | `Notes` metadata field | Frame.io |
-| Editor | J | Editor name | Manual |
-
-**webhook events tab** (append-only raw log):
-
-| Column | Field |
+| Scope | Purpose |
 |---|---|
-| A | Event type |
-| B | Timestamp (UTC ISO-8601) |
-| C | Raw JSON payload (truncated at 50,000 chars) |
+| `lists:read` | Read list items to search for existing rows |
+| `lists:write` | Create and update list rows |
+| `groups:read` | Access the private channel where the list lives |
+
+3. Click **Install to Workspace** and authorize.
+4. Copy the **Bot User OAuth Token** (starts with `xoxb-`) → save as `SLACK_BOT_TOKEN`.
+
+**Add the bot to the private channel:**
+
+5. In Slack, open the private channel where your list lives.
+6. Click the channel name → **Integrations** tab → **Add apps** → search for your app name.
+
+**Get the List ID:**
+
+7. Open the list in Slack. The List ID is the last segment of the URL:
+   `https://<workspace>.slack.com/lists/<team-id>/<list-id>`
+   Save it as `SLACK_LIST_ID`.
 
 > [!NOTE]
-> Columns marked **Manual** are never overwritten by the webhook. The upsert logic skips any key whose value is blank or `None`, so manually entered values are always preserved.
+> Slack Lists require a **paid Slack workspace**. They are not available on the free plan.
+
+### 5. Discover Column and Option IDs
+
+The Slack Lists API requires opaque column IDs and select option IDs — not human-readable names. Run the provided helper script once to discover these values.
+
+**Prerequisites:** At least one item must exist in the list with all select columns filled in so all option IDs are visible. Add a test row manually via the Slack UI if needed.
+
+```bash
+# Set env vars first (or use a .env file with python-dotenv)
+export SLACK_BOT_TOKEN=xoxb-...
+export SLACK_LIST_ID=F0B2ZR12X43
+
+python discover_schema.py
+```
+
+The script will print:
+1. A raw dump of every column ID it found and sample values / option names
+2. A suggested `.env` snippet with instructions for mapping each column
+
+Copy the column IDs and option IDs into your `.env` file and Vercel env vars, then redeploy.
 
 ---
 
-## Customizing the Sheet Columns
+## List Structure
 
-If you need to add, remove, or reorder columns, update `sheets_writer.py`:
+The Slack list has 6 columns, all populated automatically by the webhook:
 
-**Column letter assignments** (`sheets_writer.py` lines 17–26):
-```python
-COL_STATUS         = 'A'
-COL_FRAMEIO_FILE_ID = 'B'
-COL_PRODUCTION_ID  = 'C'
-COL_NAME           = 'D'
-COL_RELEASE        = 'E'
-COL_SPEAKER        = 'F'
-COL_SME            = 'G'
-COL_PM             = 'H'
-COL_NOTES          = 'I'
-COL_EDITOR         = 'J'
-```
+| Column | Type | Frame.io Source | Select Options |
+|---|---|---|---|
+| Name | text | Asset filename | — |
+| File ID | text | Asset ID | — |
+| SME | select | `SME` metadata field | Needs Review, In Progress, Approved, N/A |
+| PM | select | `PM` metadata field | Needs Review, In Progress, Approved, N/A |
+| Status | select | `Overall Video Status` metadata field | Rough Cut Ready, R1 Comments, R2 Comments, R2 Edits, Approvals, Full Length Lecture |
+| Notes | text | `Notes` metadata field | — |
 
-**Field → column letter mapping** (`sheets_writer.py` lines 29–40):
-```python
-SHEET_COLUMNS = {
-    'status':           COL_STATUS,
-    'frameio_file_id':  COL_FRAMEIO_FILE_ID,
-    'production_id':    COL_PRODUCTION_ID,
-    ...
-}
-```
-
-**Insert column order** (`sheets_writer.py` lines 43–44) — must match the physical column order A through J (or however many you have):
-```python
-COLUMN_ORDER = ['status', 'frameio_file_id', 'production_id', 'name',
-                'release', 'speaker', 'sme', 'pm', 'notes', 'editor']
-```
-
-If you add a new column `K`, add a new `COL_*` constant, add it to `SHEET_COLUMNS`, and append it to `COLUMN_ORDER`.
+The lookup key is **File ID** — every upsert first searches the list for a row with a matching Frame.io file ID before deciding whether to create or update.
 
 ---
 
 ## Metadata Field Names Must Match Frame.io Exactly
 
 > [!IMPORTANT]
-> The field names in `METADATA_FIELD_TO_SHEET_KEY` (`enrichment.py` lines 15–21) are matched against the `field_definition_name` returned by the Frame.io API. They are **case-sensitive and must match exactly** what is configured in your Frame.io account's metadata schema.
+> The field names in `METADATA_FIELD_MAP` (`enrichment.py`) are matched against the `field_definition_name` returned by the Frame.io API. They are **case-sensitive and must match exactly** what is configured in your Frame.io account's metadata schema.
 
 ```python
-# enrichment.py lines 15–21
-METADATA_FIELD_TO_SHEET_KEY = {
+# enrichment.py
+METADATA_FIELD_MAP = {
     'Overall Video Status': 'status',
     'PM':                   'pm',
     'SME':                  'sme',
@@ -230,4 +233,4 @@ METADATA_FIELD_TO_SHEET_KEY = {
 }
 ```
 
-To verify the exact field names, check the `field_definition_name` values in the raw JSON logged to the **webhook events** tab, or inspect the Frame.io metadata schema under your account settings. If a field name drifts (e.g. renamed from `"PM"` to `"Project Manager"`) the mapping will silently stop syncing that field — update the key here to match.
+If a field name drifts (e.g. renamed from `"PM"` to `"Project Manager"`) the mapping will silently stop syncing that field — update the key here to match.

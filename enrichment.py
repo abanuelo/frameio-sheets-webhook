@@ -1,18 +1,15 @@
-"""Webhook event handlers: fetch full file data, parse, write to sheet."""
+"""Webhook event handlers: fetch full file data, parse, write to Slack list."""
 import os
-import re
 import logging
-from frameio_client import get_file, parse_metadata, get_project
-from sheets_writer import upsert_project_row
+from frameio_client import get_file, parse_metadata
+from slack_writer import upsert_list_item
 
 logger = logging.getLogger(__name__)
 
 ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
 
-# Frame.io metadata field name → our internal sheet key
-# Only fields that should sync from Frame.io. Speaker, Release, Editor
-# are managed manually in the sheet.
-METADATA_FIELD_TO_SHEET_KEY = {
+# Frame.io metadata field name → internal key used by slack_writer
+METADATA_FIELD_MAP = {
     'Overall Video Status': 'status',
     'PM': 'pm',
     'SME': 'sme',
@@ -20,27 +17,13 @@ METADATA_FIELD_TO_SHEET_KEY = {
     'Production ID': 'production_id',
 }
 
-# Events that warrant fetching full file + updating project tab
+# Events that warrant fetching full file + updating the Slack list
 ENRICHMENT_EVENTS = {
     'file.created',
     'file.ready',
     'file.label.updated',
     'metadata.value.updated',
 }
-
-
-def _project_tab_name(file_data: dict) -> str:
-    """The project tab in the sheet matches the Frame.io project name."""
-    project = file_data.get('project') or {}
-    return project.get('name', '').strip()
-
-
-def _extract_production_id_from_filename(filename: str) -> str:
-    """Fallback: pull AICS229-2026-L01-S01 style ID from the filename."""
-    if not filename:
-        return ''
-    match = re.search(r'AICS\d+-\d+-L\d+-S\d+', filename, re.IGNORECASE)
-    return match.group(0).upper() if match else ''
 
 
 def _extract_file_id(event: dict) -> str:
@@ -50,68 +33,46 @@ def _extract_file_id(event: dict) -> str:
 
 
 def handle_event(event: dict):
-    """Main entry point. Return True if something was written to project tab."""
+    """Main entry point. Return True if something was written to the Slack list."""
     event_type = event.get('type', '')
-    
+
     if event_type not in ENRICHMENT_EVENTS:
         logger.info(f"Skipping enrichment for event type: {event_type}")
         return False
-    
+
     file_id = _extract_file_id(event)
     if not file_id:
         logger.warning(f"No file_id in event {event.get('id')}, skipping enrichment")
         return False
-    
+
     try:
         file_data = get_file(ACCOUNT_ID, file_id)
     except Exception as e:
         logger.exception(f"Failed to fetch file {file_id}: {e}")
         return False
-    
+
     metadata = parse_metadata(file_data)
-    
-    # Filename goes into the Production ID column
+
+    # Filename goes into the Name (Production ID) column
     filename = file_data.get('name', '')
-    
+
     updates = {
         'frameio_file_id': file_id,
-        'production_id': filename,  # filename → Production ID column
+        'production_id': filename,
     }
-    
-    # Map remaining Frame.io metadata fields to sheet columns
-    for fio_field_name, sheet_key in METADATA_FIELD_TO_SHEET_KEY.items():
+
+    # Map Frame.io metadata fields to Slack list columns
+    for fio_field_name, key in METADATA_FIELD_MAP.items():
         if fio_field_name in metadata:
             value = metadata[fio_field_name]
             if isinstance(value, list):
                 continue
-            updates[sheet_key] = value
-    
-    project_tab = _project_tab_name(file_data)
-    if not project_tab:
-        logger.warning(f"No project name for file {file_id}, skipping")
-        return False
-    
+            updates[key] = value
+
     try:
-        result = upsert_project_row(project_tab, updates)
-        logger.info(f"Sheet update result: {result} for file {file_id} in tab '{project_tab}'")
+        result = upsert_list_item(updates)
+        logger.info(f"Slack list update result: {result} for file {file_id}")
         return True
     except Exception as e:
-        logger.exception(f"Failed to update sheet for file {file_id}: {e}")
+        logger.exception(f"Failed to update Slack list for file {file_id}: {e}")
         return False
-    
-def _project_tab_name(file_data: dict) -> str:
-    """Get project name. Falls back to fetching project by ID if not embedded."""
-    project = file_data.get('project') or {}
-    if project.get('name'):
-        return project['name'].strip()
-    
-    project_id = file_data.get('project_id')
-    if not project_id:
-        return ''
-    
-    try:
-        project_data = get_project(ACCOUNT_ID, project_id)
-        return project_data.get('name', '').strip()
-    except Exception as e:
-        logger.warning(f"Couldn't fetch project {project_id}: {e}")
-        return ''

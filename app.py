@@ -6,8 +6,10 @@ import time
 import logging
 from flask import Flask, request, jsonify
 
-from sheets_writer import append_event_row
+# Sheets event log disabled — replaced by Slack Lists integration
+# from sheets_writer import append_event_row
 from enrichment import handle_event
+from slack_writer import upsert_list_item
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,13 +50,7 @@ def webhook():
     try:
         event = json.loads(raw_body)
 
-        # 1. Always log to events tab
-        try:
-            append_event_row(event)
-        except Exception as e:
-            logger.exception(f"Failed to append event row: {e}")
-
-        # 2. Enrich and update project tab if applicable
+        # Enrich and update Slack list if applicable
         try:
             handle_event(event)
         except Exception as e:
@@ -139,6 +135,28 @@ def oauth_callback():
     </body>
     </html>
     """
+
+@app.route('/test/slack', methods=['POST'])
+def test_slack_write():
+    body = request.get_json(silent=True) or {}
+    file_id = body.get("file_id", "test-file-001")
+
+    sample = {
+        "frameio_file_id": file_id,
+        "production_id":   "TEST — Slack Integration Check",
+        "sme":             "Needs Review",
+        "pm":              "Needs Review",
+        "status":          "Rough Cut Ready",
+        "notes":           "Created by /test/slack endpoint",
+    }
+
+    try:
+        result = upsert_list_item(sample)
+        return jsonify(ok=True, action=result, payload=sample), 200
+    except Exception as e:
+        logger.exception(f"Slack test write failed: {e}")
+        return jsonify(ok=False, error=str(e)), 500
+
 
 @app.route('/health', methods=['GET'])
 @app.route('/', methods=['GET'])
