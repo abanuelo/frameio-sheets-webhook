@@ -123,12 +123,7 @@ def _find_item_by_file_id(file_id: str) -> dict | None:
 def _build_text_field(column_id: str, value: str) -> dict:
     return {
         "column_id": column_id,
-        "rich_text": [
-            {
-                "type": "rich_text_section",
-                "elements": [{"type": "text", "text": str(value)}],
-            }
-        ],
+        "value": str(value),
     }
 
 
