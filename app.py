@@ -68,6 +68,29 @@ def webhook():
         logger.exception(f"Unexpected error: {e}")
         return 'internal error', 500
 
+@app.route('/oauth/start', methods=['GET'])
+def oauth_start():
+    """Redirects to Adobe consent screen. Requires OAUTH_CALLBACK_ENABLED=true."""
+    if os.environ.get('OAUTH_CALLBACK_ENABLED', '').lower() != 'true':
+        return 'OAuth flow disabled. Set OAUTH_CALLBACK_ENABLED=true to enable.', 403
+
+    from urllib.parse import urlencode
+    from flask import redirect
+
+    client_id = os.environ.get('ADOBE_CLIENT_ID', '')
+    if not client_id:
+        return 'ADOBE_CLIENT_ID not configured', 500
+
+    callback_url = request.url_root.rstrip('/') + '/oauth/callback'
+    params = urlencode({
+        'client_id': client_id,
+        'scope': 'openid,AdobeID,frame.io',
+        'response_type': 'code',
+        'redirect_uri': callback_url,
+    })
+    return redirect(f"https://ims-na1.adobelogin.com/ims/authorize/v2?{params}")
+
+
 @app.route('/oauth/callback', methods=['GET'])
 def oauth_callback():
     """
