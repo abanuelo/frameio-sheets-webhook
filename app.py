@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import time
 import logging
+import requests
 from flask import Flask, request, jsonify, Response, render_template_string
 
 # Sheets event log disabled — replaced by Slack Lists integration
