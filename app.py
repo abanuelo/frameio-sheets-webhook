@@ -153,24 +153,22 @@ def test_slack_config():
         col_notes=sw.COL_NOTES or None,
     )
 
-    # Check if the bot can access the list as a file
+    # Check token identity and granted scopes via auth.test
     try:
         r = req.get(
-            "https://slack.com/api/files.info",
+            "https://slack.com/api/auth.test",
             headers={"Authorization": f"Bearer {sw.TOKEN}"},
-            params={"file": sw.LIST_ID},
             timeout=10,
         )
-        files_info = r.json()
-        config["files_info_ok"] = files_info.get("ok")
-        config["files_info_error"] = files_info.get("error")
-        if files_info.get("ok"):
-            f = files_info.get("file", {})
-            config["file_type"] = f.get("filetype")
-            config["file_channels"] = f.get("channels", [])
-            config["file_groups"] = f.get("groups", [])
+        auth = r.json()
+        config["auth_ok"] = auth.get("ok")
+        config["auth_error"] = auth.get("error")
+        config["bot_user"] = auth.get("user")
+        config["workspace"] = auth.get("team")
+        # Slack returns granted scopes in the X-OAuth-Scopes response header
+        config["granted_scopes"] = r.headers.get("X-OAuth-Scopes", "header_not_returned")
     except Exception as e:
-        config["files_info_exception"] = str(e)
+        config["auth_exception"] = str(e)
 
     return jsonify(config), 200
 
