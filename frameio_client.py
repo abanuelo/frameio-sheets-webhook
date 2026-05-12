@@ -170,6 +170,12 @@ def get_folder_children(account_id: str, folder_id: str) -> list:
         result = _api_call('GET', f'/accounts/{account_id}/folders/{folder_id}/children', params=params)
         page = result.get('data', [])
         children.extend(page)
+
+        # Log pagination fields on first page so we can see the actual response shape
+        if len(children) == len(page):
+            pagination_fields = {k: v for k, v in result.items() if k != 'data'}
+            logger.info(f"Folder children pagination fields: {pagination_fields}")
+
         if not _has_more_pages(result, page):
             break
         cursor = _next_cursor(result)

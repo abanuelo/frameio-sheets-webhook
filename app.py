@@ -352,6 +352,22 @@ def _comment_rows(file_name: str, file_id: str, comments: list) -> list[list]:
 _CSV_HEADERS = ['file_name', 'file_id', 'author', 'comment', 'timecode', 'created_at', 'completed', 'is_reply', 'parent_comment_id']
 
 
+@app.route('/comments/debug-pagination', methods=['GET'])
+def comments_debug_pagination():
+    """Return the raw first-page response from the folder children endpoint (minus data items)."""
+    from frameio_client import _api_call
+    folder_id = request.args.get('folder_id', '').strip()
+    if not folder_id:
+        return 'Missing folder_id parameter', 400
+    account_id = os.environ.get('FRAMEIO_ACCOUNT_ID', '')
+    result = _api_call('GET', f'/accounts/{account_id}/folders/{folder_id}/children', params={'page_size': 50})
+    # Return everything except the data array so the response is readable
+    debug = {k: v for k, v in result.items() if k != 'data'}
+    debug['data_count'] = len(result.get('data', []))
+    debug['first_item_keys'] = list(result['data'][0].keys()) if result.get('data') else []
+    return jsonify(debug), 200
+
+
 @app.route('/comments/scan', methods=['GET'])
 def comments_scan():
     """Stream an HTML progress page showing each file and its comment count."""
