@@ -127,28 +127,24 @@ def get_project(account_id: str, project_id: str) -> dict:
     return result.get('data', {})
 
 
-def _has_more_pages(result: dict, page: list) -> bool:
-    """Return True if the API response indicates there are more pages to fetch."""
-    if not page:
-        return False
-    # Cursor-based signals (check all known locations)
-    cursor = (
-        result.get('next_cursor')
-        or result.get('pagination', {}).get('next_cursor')
-        or result.get('pagination', {}).get('cursor')
-        or result.get('meta', {}).get('next_cursor')
-        or result.get('page_info', {}).get('end_cursor')
-    )
-    if cursor:
-        return True
-    # Boolean signals
-    if result.get('has_more') or result.get('pagination', {}).get('has_more'):
-        return True
-    return False
-
-
 def _next_cursor(result: dict) -> str | None:
-    """Extract the pagination cursor from a Frame.io v4 response regardless of where it lives."""
+    """Extract the pagination cursor from a Frame.io v4 response.
+
+    Frame.io v4 returns pagination as:
+      {"links": {"next": "/v4/accounts/.../children?after=<cursor>"}}
+    Also checks legacy/alternative locations for safety.
+    """
+    from urllib.parse import urlparse, parse_qs
+
+    # Primary: links.next URL contains the cursor as ?after=
+    next_url = result.get('links', {}).get('next', '')
+    if next_url:
+        qs = parse_qs(urlparse(next_url).query)
+        cursor = qs.get('after', [None])[0]
+        if cursor:
+            return cursor
+
+    # Fallbacks for other possible shapes
     return (
         result.get('next_cursor')
         or result.get('pagination', {}).get('next_cursor')
@@ -157,6 +153,13 @@ def _next_cursor(result: dict) -> str | None:
         or result.get('page_info', {}).get('end_cursor')
         or None
     )
+
+
+def _has_more_pages(result: dict, page: list) -> bool:
+    """Return True if the API response indicates there are more pages to fetch."""
+    if not page:
+        return False
+    return _next_cursor(result) is not None
 
 
 def get_folder_children(account_id: str, folder_id: str) -> list:
