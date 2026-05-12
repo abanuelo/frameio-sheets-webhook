@@ -136,6 +136,22 @@ def oauth_callback():
     </html>
     """
 
+@app.route('/test/slack', methods=['GET'])
+def test_slack_config():
+    """GET /test/slack — show which Slack env vars are configured on this deployment."""
+    import slack_writer as sw
+    return jsonify(
+        list_id=sw.LIST_ID or None,
+        token_set=bool(sw.TOKEN),
+        col_name=sw.COL_NAME or None,
+        col_file_id=sw.COL_FILE_ID or None,
+        col_sme=sw.COL_SME or None,
+        col_pm=sw.COL_PM or None,
+        col_status=sw.COL_STATUS or None,
+        col_notes=sw.COL_NOTES or None,
+    ), 200
+
+
 @app.route('/test/slack', methods=['POST'])
 def test_slack_write():
     body = request.get_json(silent=True) or {}
