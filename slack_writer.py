@@ -1,5 +1,6 @@
 """Slack Lists writer — upserts Frame.io video metadata into a Slack List."""
 import os
+import json
 import logging
 import requests
 
@@ -56,10 +57,13 @@ _FIELD_CONFIG: dict[str, tuple[str, str]] = {
 
 
 def _slack_post(method: str, payload: dict) -> dict:
+    # Slack Lists write APIs require form-encoded data with token in the body
+    form_data = {"token": TOKEN}
+    for k, v in payload.items():
+        form_data[k] = json.dumps(v) if isinstance(v, (dict, list)) else v
     resp = requests.post(
         f"{SLACK_API}/{method}",
-        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
-        json=payload,
+        data=form_data,
         timeout=15,
     )
     resp.raise_for_status()
