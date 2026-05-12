@@ -189,15 +189,38 @@ def get_all_files_in_folder(account_id: str, folder_id: str) -> list:
     return files
 
 
+def _fetch_comments_page(account_id: str, file_id: str, cursor: str | None, include: str) -> dict:
+    params = {'page_size': 50, 'include': include}
+    if cursor:
+        params['after'] = cursor
+    return _api_call('GET', f'/accounts/{account_id}/files/{file_id}/comments', params=params)
+
+
 def get_file_comments(account_id: str, file_id: str) -> list:
-    """Return all top-level comments (with replies and owner) for a file, fully paginated."""
+    """Return all comments (with replies and owner) for a file, fully paginated.
+
+    Falls back to include=owner only if the combined include causes a 400,
+    and returns [] if the file type doesn't support comments at all.
+    """
+    # Try with replies first; some file types or API versions reject the combined include
+    include = 'owner,replies'
     comments = []
     cursor = None
     while True:
-        params = {'page_size': 50, 'include': 'owner,replies'}
-        if cursor:
-            params['after'] = cursor
-        result = _api_call('GET', f'/accounts/{account_id}/files/{file_id}/comments', params=params)
+        try:
+            result = _fetch_comments_page(account_id, file_id, cursor, include)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 400 and include != 'owner':
+                logger.warning(f"include=owner,replies rejected for {file_id} — retrying with include=owner only")
+                include = 'owner'
+                cursor = None
+                comments = []
+                continue
+            elif e.response is not None and e.response.status_code in (400, 404):
+                logger.info(f"File {file_id} does not support comments ({e.response.status_code}) — skipping")
+                return []
+            raise
+
         page = result.get('data', [])
         comments.extend(page)
         if not _has_more_pages(result, page):
