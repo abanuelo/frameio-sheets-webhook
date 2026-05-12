@@ -88,7 +88,7 @@ def oauth_start():
     callback_url = base + '/oauth/callback'
     params = urlencode({
         'client_id': client_id,
-        'scope': 'openid,AdobeID,frame.io',
+        'scope': 'openid,offline_access,email,profile,additional_info.roles',
         'response_type': 'code',
         'redirect_uri': callback_url,
     })
