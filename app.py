@@ -9,10 +9,8 @@ import logging
 import requests
 from flask import Flask, request, jsonify, Response, render_template_string
 
-# Sheets event log disabled — replaced by Slack Lists integration
-# from sheets_writer import append_event_row
 from enrichment import handle_event
-from slack_writer import upsert_list_item
+from airtable_writer import upsert_record
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,7 +51,7 @@ def webhook():
     try:
         event = json.loads(raw_body)
 
-        # Enrich and update Slack list if applicable
+        # Enrich and update Airtable if applicable
         try:
             handle_event(event)
         except Exception as e:
@@ -166,62 +164,47 @@ def oauth_callback():
     </html>
     """
 
-@app.route('/test/slack', methods=['GET'])
-def test_slack_config():
-    """GET /test/slack — show config and verify the bot can see the list via files.info."""
-    import requests as req
-    import slack_writer as sw
+@app.route('/test/airtable', methods=['GET'])
+def test_airtable_config():
+    """GET /test/airtable — verify Airtable credentials and table discovery."""
+    import airtable_writer as aw
 
     config = dict(
-        list_id=sw.LIST_ID or None,
-        token_set=bool(sw.TOKEN),
-        col_name=sw.COL_NAME or None,
-        col_file_id=sw.COL_FILE_ID or None,
-        col_sme=sw.COL_SME or None,
-        col_pm=sw.COL_PM or None,
-        col_status=sw.COL_STATUS or None,
-        col_notes=sw.COL_NOTES or None,
+        base_id=aw.BASE_ID or None,
+        pat_set=bool(aw.PAT),
     )
 
-    # Check token identity and granted scopes via auth.test
     try:
-        r = req.get(
-            "https://slack.com/api/auth.test",
-            headers={"Authorization": f"Bearer {sw.TOKEN}"},
-            timeout=10,
-        )
-        auth = r.json()
-        config["auth_ok"] = auth.get("ok")
-        config["auth_error"] = auth.get("error")
-        config["bot_user"] = auth.get("user")
-        config["workspace"] = auth.get("team")
-        # Slack returns granted scopes in the X-OAuth-Scopes response header
-        config["granted_scopes"] = r.headers.get("X-OAuth-Scopes", "header_not_returned")
+        table_name = aw.discover_table()
+        config["table_name"] = table_name
+        config["ok"] = True
     except Exception as e:
-        config["auth_exception"] = str(e)
+        config["ok"] = False
+        config["error"] = str(e)
 
     return jsonify(config), 200
 
 
-@app.route('/test/slack', methods=['POST'])
-def test_slack_write():
+@app.route('/test/airtable', methods=['POST'])
+def test_airtable_write():
+    """POST /test/airtable — write a sample record to Airtable."""
     body = request.get_json(silent=True) or {}
     file_id = body.get("file_id", "test-file-001")
 
     sample = {
         "frameio_file_id": file_id,
-        "production_id":   "TEST — Slack Integration Check",
+        "production_id":   "TEST — Airtable Integration Check",
         "sme":             "Needs Review",
         "pm":              "Needs Review",
         "status":          "Rough Cut Ready",
-        "notes":           "Created by /test/slack endpoint",
+        "notes":           "Created by /test/airtable endpoint",
     }
 
     try:
-        result = upsert_list_item(sample)
+        result = upsert_record(sample)
         return jsonify(ok=True, action=result, payload=sample), 200
     except Exception as e:
-        logger.exception(f"Slack test write failed: {e}")
+        logger.exception(f"Airtable test write failed: {e}")
         return jsonify(ok=False, error=str(e)), 500
 
 

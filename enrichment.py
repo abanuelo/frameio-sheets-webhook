@@ -1,14 +1,14 @@
-"""Webhook event handlers: fetch full file data, parse, write to Slack list."""
+"""Webhook event handlers: fetch full file data, parse, write to Airtable."""
 import os
 import logging
 from frameio_client import get_file, parse_metadata
-from slack_writer import upsert_list_item
+from airtable_writer import upsert_record
 
 logger = logging.getLogger(__name__)
 
 ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
 
-# Frame.io metadata field name → internal key used by slack_writer
+# Frame.io metadata field name → internal key used by airtable_writer
 METADATA_FIELD_MAP = {
     'Overall Video Status': 'status',
     'PM': 'pm',
@@ -17,7 +17,7 @@ METADATA_FIELD_MAP = {
     'Production ID': 'production_id',
 }
 
-# Events that warrant fetching full file + updating the Slack list
+# Events that warrant fetching full file + updating Airtable
 ENRICHMENT_EVENTS = {
     'file.created',
     'file.ready',
@@ -33,7 +33,7 @@ def _extract_file_id(event: dict) -> str:
 
 
 def handle_event(event: dict):
-    """Main entry point. Return True if something was written to the Slack list."""
+    """Main entry point. Return True if something was written to Airtable."""
     event_type = event.get('type', '')
 
     if event_type not in ENRICHMENT_EVENTS:
@@ -61,7 +61,7 @@ def handle_event(event: dict):
         'production_id': filename,
     }
 
-    # Map Frame.io metadata fields to Slack list columns
+    # Map Frame.io metadata fields to Airtable columns
     for fio_field_name, key in METADATA_FIELD_MAP.items():
         if fio_field_name in metadata:
             value = metadata[fio_field_name]
@@ -70,9 +70,9 @@ def handle_event(event: dict):
             updates[key] = value
 
     try:
-        result = upsert_list_item(updates)
-        logger.info(f"Slack list update result: {result} for file {file_id}")
+        result = upsert_record(updates)
+        logger.info(f"Airtable update result: {result} for file {file_id}")
         return True
     except Exception as e:
-        logger.exception(f"Failed to update Slack list for file {file_id}: {e}")
+        logger.exception(f"Failed to update Airtable for file {file_id}: {e}")
         return False
