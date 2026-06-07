@@ -197,7 +197,7 @@ def test_airtable_write():
         "production_id":   "TEST — Airtable Integration Check",
         "sme":             "Needs Review",
         "pm":              "Needs Review",
-        "status":          "Rough Cut Ready",
+        "status":          "Rough Cuts",
         "notes":           "Created by /test/airtable endpoint",
     }
 
