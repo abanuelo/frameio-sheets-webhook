@@ -175,8 +175,9 @@ def test_airtable_config():
     )
 
     try:
-        table_name = aw.discover_table()
+        table_name, field_map = aw.discover_table()
         config["table_name"] = table_name
+        config["field_map"] = field_map
         config["ok"] = True
     except Exception as e:
         config["ok"] = False
