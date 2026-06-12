@@ -1,7 +1,7 @@
 """Webhook event handlers: fetch full file data, parse, write to Airtable."""
 import os
 import logging
-from frameio_client import get_file, parse_metadata
+from frameio_client import get_file, parse_metadata, get_project
 from airtable_writer import upsert_record
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,34 @@ def _extract_file_id(event: dict) -> str:
     return resource.get('id') or event.get('file_id') or ''
 
 
+def _resolve_project_name(event: dict, file_data: dict) -> str | None:
+    """Resolve the Frame.io project name for an asset.
+
+    The project name is used to pick the matching Airtable table. Returns None
+    if the project can't be determined, in which case the caller should skip.
+    """
+    project_id = (
+        file_data.get('project_id')
+        or (file_data.get('project') or {}).get('id')
+        or (event.get('project') or {}).get('id')
+        or ((event.get('resource') or {}).get('project') or {}).get('id')
+    )
+    if not project_id:
+        logger.warning("Could not determine project_id from file or event payload")
+        return None
+
+    try:
+        project = get_project(ACCOUNT_ID, project_id)
+    except Exception as e:
+        logger.warning(f"Failed to fetch project {project_id}: {e}")
+        return None
+
+    name = project.get('name')
+    if not name:
+        logger.warning(f"Project {project_id} has no name")
+    return name
+
+
 def handle_event(event: dict):
     """Main entry point. Return True if something was written to Airtable."""
     event_type = event.get('type', '')
@@ -53,6 +81,12 @@ def handle_event(event: dict):
         file_data = get_file(ACCOUNT_ID, file_id)
     except Exception as e:
         logger.exception(f"Failed to fetch file {file_id}: {e}")
+        return False
+
+    # The project name selects which Airtable table to write to.
+    project_name = _resolve_project_name(event, file_data)
+    if not project_name:
+        logger.warning(f"No project name for file {file_id}; cannot route to a table — skipping")
         return False
 
     metadata = parse_metadata(file_data)
@@ -77,8 +111,8 @@ def handle_event(event: dict):
         updates[key] = value
 
     try:
-        result = upsert_record(updates)
-        logger.info(f"Airtable update result: {result} for file {file_id}")
+        result = upsert_record(updates, table_hint=project_name)
+        logger.info(f"Airtable update result: {result} for file {file_id} (project {project_name!r})")
         return True
     except Exception as e:
         logger.exception(f"Failed to update Airtable for file {file_id}: {e}")

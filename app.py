@@ -196,7 +196,12 @@ def test_accounts():
 
 @app.route('/test/airtable', methods=['GET'])
 def test_airtable_config():
-    """GET /test/airtable — verify Airtable credentials and table discovery."""
+    """GET /test/airtable — verify Airtable credentials and table discovery.
+
+    Optional ?project=<name> resolves which table a Frame.io project name would
+    route to (case-insensitive), echoing back its field_map. Without it, all
+    tables in the base are listed.
+    """
     import airtable_writer as aw
 
     config = dict(
@@ -204,10 +209,22 @@ def test_airtable_config():
         pat_set=bool(aw.PAT),
     )
 
+    project = request.args.get("project", "").strip() or None
+
     try:
-        table_name, field_map = aw.discover_table()
-        config["table_name"] = table_name
-        config["field_map"] = field_map
+        tables = aw._fetch_tables()
+        config["tables"] = [t["name"] for t in tables]
+
+        if project:
+            config["project"] = project
+            try:
+                table_name, field_map = aw.discover_table(project)
+                config["resolved_table"] = table_name
+                config["field_map"] = field_map
+                config["matched"] = True
+            except LookupError:
+                config["resolved_table"] = None
+                config["matched"] = False
         config["ok"] = True
     except Exception as e:
         config["ok"] = False

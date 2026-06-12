@@ -10,9 +10,10 @@ AIRTABLE_API = "https://api.airtable.com/v0"
 PAT = os.environ.get("AIRTABLE_PAT", "")
 BASE_ID = os.environ.get("AIRTABLE_BASE_ID", "")
 
-# Cached after first call to discover_table()
-_table_name: str | None = None
-_field_map: dict[str, str] | None = None
+# Caches populated on first lookup. The base's table list is fetched once;
+# field maps are built lazily per table name.
+_tables_cache: list | None = None
+_field_map_cache: dict[str, dict[str, str]] = {}
 
 # Internal key → normalized target for matching against Airtable column names
 _INTERNAL_KEYS: dict[str, str] = {
@@ -46,15 +47,11 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {PAT}", "Content-Type": "application/json"}
 
 
-def discover_table() -> tuple[str, dict[str, str]]:
-    """Fetch the first table name and build a dynamic field map.
-
-    Caches both so subsequent calls don't hit the API again.
-    Returns (table_name, field_map).
-    """
-    global _table_name, _field_map
-    if _table_name and _field_map is not None:
-        return _table_name, _field_map
+def _fetch_tables() -> list:
+    """Fetch (and cache) the list of tables in the base via the meta API."""
+    global _tables_cache
+    if _tables_cache is not None:
+        return _tables_cache
 
     resp = requests.get(
         f"https://api.airtable.com/v0/meta/bases/{BASE_ID}/tables",
@@ -66,28 +63,67 @@ def discover_table() -> tuple[str, dict[str, str]]:
     if not tables:
         raise RuntimeError(f"No tables found in Airtable base {BASE_ID}")
 
-    table = tables[0]
-    _table_name = table["name"]
-    logger.info(f"Discovered Airtable table: {_table_name!r}")
+    logger.info(f"Discovered Airtable tables: {[t['name'] for t in tables]}")
+    _tables_cache = tables
+    return tables
+
+
+def _field_map_for(table: dict) -> dict[str, str]:
+    """Build (and cache) the internal-key → column-name map for one table."""
+    name = table["name"]
+    cached = _field_map_cache.get(name)
+    if cached is not None:
+        return cached
 
     # Build normalized lookup: normalized_name → actual Airtable column name
     columns = {_normalize(f["name"]): f["name"] for f in table.get("fields", [])}
-    logger.info(f"Airtable columns: {list(columns.values())}")
+    logger.info(f"Table {name!r} columns: {list(columns.values())}")
 
-    # Match our internal keys to actual columns
-    _field_map = {}
+    field_map: dict[str, str] = {}
     for internal_key, norm_target in _INTERNAL_KEYS.items():
         actual = columns.get(norm_target)
         if actual:
-            _field_map[internal_key] = actual
+            field_map[internal_key] = actual
         else:
             logger.warning(
-                f"No Airtable column matches internal key {internal_key!r} "
+                f"Table {name!r}: no column matches internal key {internal_key!r} "
                 f"(looking for normalized {norm_target!r})"
             )
 
-    logger.info(f"Dynamic field map: {_field_map}")
-    return _table_name, _field_map
+    logger.info(f"Field map for {name!r}: {field_map}")
+    _field_map_cache[name] = field_map
+    return field_map
+
+
+def _find_table(table_hint: str | None) -> dict | None:
+    """Pick the target table.
+
+    With a hint, match an Airtable table by name case-insensitively (spaces and
+    underscores ignored). Returns None if a hint is given but nothing matches.
+    Without a hint, returns the first table in the base.
+    """
+    tables = _fetch_tables()
+    if not table_hint:
+        return tables[0]
+
+    target = _normalize(table_hint)
+    for table in tables:
+        if _normalize(table["name"]) == target:
+            return table
+    return None
+
+
+def discover_table(table_hint: str | None = None) -> tuple[str, dict[str, str]]:
+    """Resolve the target table and its field map.
+
+    With `table_hint` (e.g. a Frame.io project name), the table is matched by
+    name case-insensitively. Returns (table_name, field_map).
+    Raises LookupError if a hint is given but no table matches.
+    """
+    table = _find_table(table_hint)
+    if table is None:
+        raise LookupError(f"No Airtable table matches {table_hint!r}")
+    return table["name"], _field_map_for(table)
 
 
 def _find_record_by_file_id(table_name: str, file_id_col: str, file_id: str) -> dict | None:
@@ -125,8 +161,12 @@ def _update_record(table_name: str, record_id: str, fields: dict) -> dict:
     return resp.json()
 
 
-def upsert_record(updates: dict) -> str:
+def upsert_record(updates: dict, table_hint: str | None = None) -> str:
     """Write Frame.io metadata to Airtable.
+
+    `table_hint` (the Frame.io project name) selects which table to write to,
+    matched by name case-insensitively. If a hint is given but no table matches,
+    the write is skipped. With no hint, the first table in the base is used.
 
     Finds an existing record by File ID and updates it, or creates a new one.
     Returns 'updated', 'created', or 'skipped'.
@@ -135,7 +175,13 @@ def upsert_record(updates: dict) -> str:
     if not file_id:
         raise ValueError("updates must include frameio_file_id")
 
-    table_name, field_map = discover_table()
+    try:
+        table_name, field_map = discover_table(table_hint)
+    except LookupError:
+        logger.warning(
+            f"No Airtable table matches project {table_hint!r} for file {file_id} — skipping"
+        )
+        return "skipped"
 
     # Build Airtable fields dict from our internal keys
     fields: dict[str, str] = {}

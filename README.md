@@ -38,7 +38,7 @@ POST /api/webhook          ← app.py verifies HMAC signature
                │
                └─► upsert_record()   ← airtable_writer.py
                         │
-                        ├─ Discovers the table + columns via the Airtable meta API
+                        ├─ Picks the table whose name matches the asset's Frame.io project (case-insensitive)
                         ├─ Searches the table for matching Frame.io File ID
                         ├─ Found ──────────────────────────────► UPDATE row
                         └─ Not found ──────────────────────────► INSERT new row
@@ -77,7 +77,7 @@ When someone edits a custom metadata field on an existing asset a `metadata.valu
 | `AIRTABLE_PAT` | Airtable → [Developer hub → Personal access tokens](https://airtable.com/create/tokens) | Needs scopes `schema.bases:read`, `data.records:read`, `data.records:write`, and access to your base |
 | `AIRTABLE_BASE_ID` | The base ID from the base URL or [airtable.com/api](https://airtable.com/api) | Starts with `app...` |
 
-The table itself is **auto-discovered** — the writer reads the first table in the base and matches its column names to the internal keys (case-insensitively). There are no per-column ID env vars to configure.
+The target table is **routed by Frame.io project name** — the writer matches the asset's project name against the table names in the base (case-insensitively) and writes there. If no table matches, the update is skipped and logged. Column names within the table are matched the same way. There are no per-column ID env vars to configure.
 
 > [!NOTE]
 > `ADOBE_REFRESH_TOKEN` can rotate. If the Frame.io API starts returning 401 errors, check Vercel logs — the app will log a warning with the new token value. Update the env var and redeploy.
@@ -138,7 +138,7 @@ Lastly, on your [Frame.io profile settings](https://next.frame.io/settings/profi
 **Create the base and table:**
 
 1. Create (or open) the Airtable base that will hold the synced rows.
-2. In its first table, create columns whose names match the [Table Structure](#table-structure) below. Names are matched case-insensitively and ignore spaces/underscores, so `File ID`, `file_id`, and `fileid` are all equivalent. The writer uses the **first table** in the base.
+2. Create one table **per Frame.io project**, named to match the project name (case-insensitive — spaces and underscores are ignored). Each table needs columns whose names match the [Table Structure](#table-structure) below; those are matched the same way, so `File ID`, `file_id`, and `fileid` are all equivalent. An asset is written to the table matching its project name; if none matches, the update is skipped.
 3. Grab the **base ID** from the base URL (`airtable.com/app.../...`) or from [airtable.com/api](https://airtable.com/api), and save it as `AIRTABLE_BASE_ID`.
 
 **Create a Personal Access Token:**
@@ -156,9 +156,9 @@ Lastly, on your [Frame.io profile settings](https://next.frame.io/settings/profi
 Two diagnostic endpoints confirm everything is wired up before you rely on live webhooks:
 
 - **`GET /test/accounts`** — lists the Frame.io accounts your OAuth token can see and flags whether your configured `FRAMEIO_ACCOUNT_ID` matches one of them. Use this if the Frame.io API returns errors.
-- **`GET /test/airtable`** — verifies the Airtable credentials, shows the discovered table name, and prints the resolved `field_map` (internal key → actual column). Any internal key missing from the map means no Airtable column matched it.
+- **`GET /test/airtable`** — verifies the Airtable credentials and lists every table in the base. Add `?project=<name>` to test routing: it reports which table that project name resolves to (`resolved_table`, `matched`) and the resolved `field_map` (internal key → actual column). Any internal key missing from the map means no column matched it.
 
-You can also `POST /test/airtable` with `{"file_id": "..."}` to write a sample row end to end.
+You can also `POST /test/airtable` with `{"file_id": "..."}` to write a sample row (this test write uses the first table in the base).
 
 ---
 
@@ -179,7 +179,7 @@ The Airtable table has 8 columns, all populated automatically by the webhook:
 
 The lookup key is **File ID** — every upsert first searches the table for a row with a matching Frame.io file ID before deciding whether to create or update.
 
-Column names are matched **case-insensitively** (spaces and underscores are ignored too), so an Airtable column named `Module`, `MODULE`, or `module` all map to the same field. Run `GET /test/airtable` after deploying to see the resolved `field_map` — any internal key without a matching Airtable column is logged as a warning and skipped.
+Each routed table should have these columns. Column names are matched **case-insensitively** (spaces and underscores are ignored too), so an Airtable column named `Module`, `MODULE`, or `module` all map to the same field. Run `GET /test/airtable?project=<name>` after deploying to see the resolved `field_map` for a given project's table — any internal key without a matching column is logged as a warning and skipped.
 
 ---
 
