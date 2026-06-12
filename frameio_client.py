@@ -73,6 +73,16 @@ def _api_call(method: str, path: str, **kwargs):
     return response.json()
 
 
+def get_accounts() -> list:
+    """Return the accounts the current OAuth token has access to.
+
+    Use this to discover the correct value for FRAMEIO_ACCOUNT_ID — the
+    account the webhook fires for must be one of the IDs returned here.
+    """
+    result = _api_call('GET', '/accounts')
+    return result.get('data', [])
+
+
 def get_file(account_id: str, file_id: str) -> dict:
     """Fetch a file with metadata included."""
     result = _api_call(

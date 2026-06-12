@@ -164,6 +164,36 @@ def oauth_callback():
     </html>
     """
 
+@app.route('/test/accounts', methods=['GET'])
+def test_accounts():
+    """GET /test/accounts — list the accounts this OAuth token can see.
+
+    Use this to find the correct FRAMEIO_ACCOUNT_ID. The currently configured
+    value is echoed back as `configured_account_id` and flagged with `matches`
+    if it appears in the token's accessible accounts.
+    """
+    from frameio_client import get_accounts
+
+    configured = os.environ.get('FRAMEIO_ACCOUNT_ID', '') or None
+    try:
+        accounts = get_accounts()
+    except Exception as e:
+        logger.exception(f"Failed to list accounts: {e}")
+        return jsonify(ok=False, configured_account_id=configured, error=str(e)), 500
+
+    summary = [
+        {'id': a.get('id'), 'name': a.get('display_name') or a.get('name')}
+        for a in accounts
+    ]
+    ids = [a['id'] for a in summary]
+    return jsonify(
+        ok=True,
+        configured_account_id=configured,
+        matches=configured in ids if configured else False,
+        accounts=summary,
+    ), 200
+
+
 @app.route('/test/airtable', methods=['GET'])
 def test_airtable_config():
     """GET /test/airtable — verify Airtable credentials and table discovery."""
