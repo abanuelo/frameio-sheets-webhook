@@ -22,6 +22,8 @@ _INTERNAL_KEYS: dict[str, str] = {
     "pm": "pm",
     "status": "status",
     "notes": "notes",
+    "module": "module",
+    "id": "id",
 }
 
 

@@ -8,13 +8,17 @@ logger = logging.getLogger(__name__)
 
 ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
 
-# Frame.io metadata field name → internal key used by airtable_writer
+# Frame.io metadata field name → internal key used by airtable_writer.
+# Names are matched case-insensitively (see handle_event), so the casing here
+# is just for readability.
 METADATA_FIELD_MAP = {
     'Overall Video Status': 'status',
     'PM': 'pm',
     'SME': 'sme',
     'Notes': 'notes',
     'Production ID': 'production_id',
+    'MODULE': 'module',
+    'ID': 'id',
 }
 
 # Events that warrant fetching full file + updating Airtable
@@ -61,13 +65,16 @@ def handle_event(event: dict):
         'production_id': filename,
     }
 
-    # Map Frame.io metadata fields to Airtable columns
+    # Map Frame.io metadata fields to Airtable columns.
+    # Match field names case-insensitively so "Module"/"MODULE"/"module" all work.
+    metadata_ci = {name.lower(): val for name, val in metadata.items()}
     for fio_field_name, key in METADATA_FIELD_MAP.items():
-        if fio_field_name in metadata:
-            value = metadata[fio_field_name]
-            if isinstance(value, list):
-                continue
-            updates[key] = value
+        value = metadata_ci.get(fio_field_name.lower())
+        if value is None:
+            continue
+        if isinstance(value, list):
+            continue
+        updates[key] = value
 
     try:
         result = upsert_record(updates)

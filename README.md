@@ -202,7 +202,7 @@ Copy the column IDs and option IDs into your `.env` file and Vercel env vars, th
 
 ## List Structure
 
-The Slack list has 6 columns, all populated automatically by the webhook:
+The Airtable table has 8 columns, all populated automatically by the webhook:
 
 | Column | Type | Frame.io Source | Select Options |
 |---|---|---|---|
@@ -212,15 +212,19 @@ The Slack list has 6 columns, all populated automatically by the webhook:
 | PM | select | `PM` metadata field | Needs Review, In Progress, Approved, N/A |
 | Status | select | `Overall Video Status` metadata field | Rough Cut Ready, R1 Comments, R2 Comments, R2 Edits, Approvals, Full Length Lecture |
 | Notes | text | `Notes` metadata field | — |
+| Module | text | `Module` metadata field | — |
+| ID | text | `ID` metadata field | — |
 
-The lookup key is **File ID** — every upsert first searches the list for a row with a matching Frame.io file ID before deciding whether to create or update.
+The lookup key is **File ID** — every upsert first searches the table for a row with a matching Frame.io file ID before deciding whether to create or update.
+
+Column names are matched **case-insensitively** (spaces and underscores are ignored too), so an Airtable column named `Module`, `MODULE`, or `module` all map to the same field. Run `GET /test/airtable` after deploying to see the resolved `field_map` — any internal key without a matching Airtable column is logged as a warning and skipped.
 
 ---
 
-## Metadata Field Names Must Match Frame.io Exactly
+## Metadata Field Names
 
 > [!IMPORTANT]
-> The field names in `METADATA_FIELD_MAP` (`enrichment.py`) are matched against the `field_definition_name` returned by the Frame.io API. They are **case-sensitive and must match exactly** what is configured in your Frame.io account's metadata schema.
+> The field names in `METADATA_FIELD_MAP` (`enrichment.py`) are matched against the `field_definition_name` returned by the Frame.io API. Matching is **case-insensitive**, so `Module`, `MODULE`, and `module` all resolve to the same key — but the rest of the name must still match what is configured in your Frame.io account's metadata schema.
 
 ```python
 # enrichment.py
@@ -230,7 +234,11 @@ METADATA_FIELD_MAP = {
     'SME':                  'sme',
     'Notes':                'notes',
     'Production ID':        'production_id',
+    'MODULE':               'module',
+    'ID':                   'id',
 }
 ```
 
-If a field name drifts (e.g. renamed from `"PM"` to `"Project Manager"`) the mapping will silently stop syncing that field — update the key here to match.
+If a field name drifts in a way casing can't absorb (e.g. renamed from `"PM"` to `"Project Manager"`) the mapping will silently stop syncing that field — update the key here to match.
+
+The internal key (right-hand side) is then matched against your Airtable columns by `_INTERNAL_KEYS` in `airtable_writer.py`, also case-insensitively. To sync a brand-new field end to end: add it here, add a matching entry to `_INTERNAL_KEYS`, and make sure an Airtable column with that name exists.
