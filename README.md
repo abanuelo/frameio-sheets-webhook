@@ -152,15 +152,47 @@ Lastly, on your [Frame.io profile settings](https://next.frame.io/settings/profi
 
 **Create the spreadsheet and tabs:**
 
-1. Create (or open) the Google Sheet that will hold the synced rows. Grab the **spreadsheet ID** from its URL (`docs.google.com/spreadsheets/d/<SHEET_ID>/edit`) and save it as `SHEET_ID`.
+**Create the spreadsheet and tabs:**
+
+1. Create (or open) the Google Sheet that will hold the synced rows. Grab the **spreadsheet ID** from its URL — it's the long string between `/d/` and `/edit`:
+   ```
+   docs.google.com/spreadsheets/d/<SHEET_ID>/edit
+   ```
+   Save it as `SHEET_ID`.
 2. Create one tab **per Frame.io project**, named to match the project name (case-insensitive — spaces and underscores are ignored). Each tab needs a **header row** (row 1) whose cells match the columns in the [Sheet Structure](#sheet-structure) below; those are matched the same way, so `File ID`, `file_id`, and `fileid` are all equivalent. An asset is written to the tab matching its project name; if none matches, the update is skipped.
 
-**Create a service account:**
+**What a service account is:** a non-human Google identity your app authenticates as. You create one in Google Cloud, download its key as a JSON file, and the *contents* of that file become the `GOOGLE_SERVICE_ACCOUNT_JSON` env var.
 
-3. In the [Google Cloud Console](https://console.cloud.google.com/), enable the **Google Sheets API** for a project.
-4. Create a **service account**, then create a **JSON key** for it. Download the JSON file.
-5. Save the entire JSON contents as `GOOGLE_SERVICE_ACCOUNT_JSON` in Vercel (single value).
-6. **Share the spreadsheet** with the service account's email (found in the JSON as `client_email`) with **Editor** access — otherwise writes return a 403.
+**Create the service account:**
+
+3. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a project (or pick an existing one) using the project dropdown at the top.
+4. Enable the Sheets API: go to [APIs & Services → Library → Google Sheets API](https://console.cloud.google.com/apis/library/sheets.googleapis.com) and click **Enable**.
+5. Go to [APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials) → **+ Create Credentials → Service account**. Give it a name (e.g. `frameio-sheets-writer`) → **Create and continue**. The optional role/access steps can be skipped → **Done**.
+
+**Create a JSON key:**
+
+6. In **Credentials**, click the service account you just created.
+7. Open the **Keys** tab → **Add Key → Create new key** → choose **JSON** → **Create**. The `.json` file downloads automatically.
+
+> [!IMPORTANT]
+> The JSON key downloads **once** — Google won't let you re-download it. If you lose it, create a new key (and delete the old one). Treat it like a password; never commit it to git.
+
+**Set the env var:**
+
+8. `GOOGLE_SERVICE_ACCOUNT_JSON` takes the **entire contents** of that JSON file (it's parsed with `json.loads()` in `sheets_writer.py`).
+   - **In Vercel:** paste the whole JSON blob as the value. Multi-line values are fine.
+   - **In a local `.env`:** put it on a single line. Flatten it with:
+     ```bash
+     cat service-account.json | jq -c .
+     ```
+     then paste that one-line output as the value.
+
+**Share the spreadsheet:** ⚠️ easy to forget
+
+9. Open the JSON file and copy the `client_email` value (looks like `frameio-sheets-writer@your-project.iam.gserviceaccount.com`). In your Google Sheet, click **Share** and add that email with **Editor** access.
+
+> [!IMPORTANT]
+> Without sharing the sheet with the service account, every write returns a **403**. This is the most common setup mistake.
 
 ### 5. Verify the Integration
 
