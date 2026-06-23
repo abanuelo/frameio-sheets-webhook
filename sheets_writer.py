@@ -38,14 +38,21 @@ _INTERNAL_KEYS: dict[str, str] = {
 
 # Caches populated on first lookup. The service and tab list are built once;
 # header maps are built lazily per tab name.
+# Only the authenticated service is cached. Tab lists and header maps are NOT
+# cached across calls: on warm serverless instances a persisted list goes stale
+# when tabs/headers change in the sheet, which is confusing during setup. The
+# webhook is low-volume, so re-fetching per call is cheap.
 _service_cache = None
-_tabs_cache: list | None = None
-_header_map_cache: dict[str, dict[str, int]] = {}
 
 
 def _normalize(col: str) -> str:
-    """Normalize a column name for fuzzy matching."""
-    return col.lower().replace(" ", "").replace("_", "")
+    """Normalize a column name for fuzzy matching.
+
+    Lowercases and removes underscores and *all* whitespace (including
+    non-breaking spaces), so a tab/header typed with stray or unicode spaces
+    still matches.
+    """
+    return "".join(col.split()).lower().replace("_", "")
 
 
 def _col_letter(idx: int) -> str:
@@ -72,11 +79,7 @@ def _service():
 
 
 def _fetch_tabs() -> list:
-    """Fetch (and cache) the list of tab titles in the spreadsheet."""
-    global _tabs_cache
-    if _tabs_cache is not None:
-        return _tabs_cache
-
+    """Fetch the list of tab titles in the spreadsheet (live, not cached)."""
     if not SHEET_ID:
         raise RuntimeError("SHEET_ID is not set")
 
@@ -86,7 +89,6 @@ def _fetch_tabs() -> list:
         raise RuntimeError(f"No tabs found in spreadsheet {SHEET_ID}")
 
     logger.info(f"Discovered sheet tabs: {titles}")
-    _tabs_cache = titles
     return titles
 
 
@@ -109,11 +111,7 @@ def _find_tab(table_hint: str | None) -> str | None:
 
 
 def _header_map_for(tab: str) -> dict[str, int]:
-    """Build (and cache) the internal-key → 0-based column index map for a tab."""
-    cached = _header_map_cache.get(tab)
-    if cached is not None:
-        return cached
-
+    """Build the internal-key → 0-based column index map for a tab (live)."""
     result = (
         _service()
         .spreadsheets()
@@ -137,7 +135,6 @@ def _header_map_for(tab: str) -> dict[str, int]:
             )
 
     logger.info(f"Header map for {tab!r}: {header_map}")
-    _header_map_cache[tab] = header_map
     return header_map
 
 
@@ -192,8 +189,13 @@ def upsert_record(updates: dict, table_hint: str | None = None) -> str:
     try:
         tab, header_map = discover_tab(table_hint)
     except LookupError:
+        try:
+            available = _fetch_tabs()
+        except Exception:
+            available = "<unavailable>"
         logger.warning(
-            f"No sheet tab matches project {table_hint!r} for file {file_id} — skipping"
+            f"No sheet tab matches project {table_hint!r} for file {file_id} "
+            f"(available: {available}) — skipping"
         )
         return "skipped"
 

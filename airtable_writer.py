@@ -10,10 +10,9 @@ AIRTABLE_API = "https://api.airtable.com/v0"
 PAT = os.environ.get("AIRTABLE_PAT", "")
 BASE_ID = os.environ.get("AIRTABLE_BASE_ID", "")
 
-# Caches populated on first lookup. The base's table list is fetched once;
-# field maps are built lazily per table name.
-_tables_cache: list | None = None
-_field_map_cache: dict[str, dict[str, str]] = {}
+# Table lists and field maps are fetched live on every call (not cached): on
+# warm serverless instances a persisted list goes stale when tables/columns
+# change in the base. The webhook is low-volume, so re-fetching is cheap.
 
 # Internal key → normalized target for matching against Airtable column names
 _INTERNAL_KEYS: dict[str, str] = {
@@ -29,8 +28,13 @@ _INTERNAL_KEYS: dict[str, str] = {
 
 
 def _normalize(col: str) -> str:
-    """Normalize a column name for fuzzy matching."""
-    return col.lower().replace(" ", "").replace("_", "")
+    """Normalize a column name for fuzzy matching.
+
+    Lowercases and removes underscores and *all* whitespace (including
+    non-breaking spaces), so a table/column typed with stray or unicode spaces
+    still matches.
+    """
+    return "".join(col.split()).lower().replace("_", "")
 
 
 def _raise_on_error(resp: requests.Response) -> None:
@@ -48,11 +52,7 @@ def _headers() -> dict:
 
 
 def _fetch_tables() -> list:
-    """Fetch (and cache) the list of tables in the base via the meta API."""
-    global _tables_cache
-    if _tables_cache is not None:
-        return _tables_cache
-
+    """Fetch the list of tables in the base via the meta API (live, not cached)."""
     resp = requests.get(
         f"https://api.airtable.com/v0/meta/bases/{BASE_ID}/tables",
         headers=_headers(),
@@ -64,16 +64,12 @@ def _fetch_tables() -> list:
         raise RuntimeError(f"No tables found in Airtable base {BASE_ID}")
 
     logger.info(f"Discovered Airtable tables: {[t['name'] for t in tables]}")
-    _tables_cache = tables
     return tables
 
 
 def _field_map_for(table: dict) -> dict[str, str]:
-    """Build (and cache) the internal-key → column-name map for one table."""
+    """Build the internal-key → column-name map for one table (live)."""
     name = table["name"]
-    cached = _field_map_cache.get(name)
-    if cached is not None:
-        return cached
 
     # Build normalized lookup: normalized_name → actual Airtable column name
     columns = {_normalize(f["name"]): f["name"] for f in table.get("fields", [])}
@@ -91,7 +87,6 @@ def _field_map_for(table: dict) -> dict[str, str]:
             )
 
     logger.info(f"Field map for {name!r}: {field_map}")
-    _field_map_cache[name] = field_map
     return field_map
 
 
@@ -178,8 +173,13 @@ def upsert_record(updates: dict, table_hint: str | None = None) -> str:
     try:
         table_name, field_map = discover_table(table_hint)
     except LookupError:
+        try:
+            available = [t["name"] for t in _fetch_tables()]
+        except Exception:
+            available = "<unavailable>"
         logger.warning(
-            f"No Airtable table matches project {table_hint!r} for file {file_id} — skipping"
+            f"No Airtable table matches project {table_hint!r} for file {file_id} "
+            f"(available: {available}) — skipping"
         )
         return "skipped"
 
