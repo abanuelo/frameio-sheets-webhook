@@ -256,6 +256,73 @@ def test_airtable_write():
         return jsonify(ok=False, error=str(e)), 500
 
 
+@app.route('/test/sheets', methods=['GET'])
+def test_sheets_config():
+    """GET /test/sheets — verify Google Sheets credentials and tab discovery.
+
+    Optional ?project=<name> resolves which tab a Frame.io project name would
+    route to (case-insensitive), echoing back its header_map. Without it, all
+    tabs in the spreadsheet are listed.
+    """
+    import sheets_writer as sw
+
+    config = dict(
+        sheet_id=sw.SHEET_ID or None,
+        creds_set=bool(sw._CREDS_JSON),
+    )
+
+    project = request.args.get("project", "").strip() or None
+
+    try:
+        config["tabs"] = sw._fetch_tabs()
+
+        if project:
+            config["project"] = project
+            try:
+                tab_name, header_map = sw.discover_tab(project)
+                config["resolved_tab"] = tab_name
+                config["header_map"] = header_map
+                config["matched"] = True
+            except LookupError:
+                config["resolved_tab"] = None
+                config["matched"] = False
+        config["ok"] = True
+    except Exception as e:
+        config["ok"] = False
+        config["error"] = str(e)
+
+    return jsonify(config), 200
+
+
+@app.route('/test/sheets', methods=['POST'])
+def test_sheets_write():
+    """POST /test/sheets — write a sample row to Google Sheets.
+
+    Optional JSON body: {"file_id": ..., "project": <tab name>}.
+    """
+    from sheets_writer import upsert_record as sheets_upsert
+
+    body = request.get_json(silent=True) or {}
+    file_id = body.get("file_id", "test-file-001")
+    project = body.get("project")
+
+    sample = {
+        "frameio_file_id": file_id,
+        "production_id":   "TEST — Sheets Integration Check",
+        "sme":             "Needs Review",
+        "pm":              "Needs Review",
+        "status":          "Rough Cuts",
+        "notes":           "Created by /test/sheets endpoint",
+    }
+
+    try:
+        result = sheets_upsert(sample, table_hint=project)
+        return jsonify(ok=True, action=result, payload=sample), 200
+    except Exception as e:
+        logger.exception(f"Sheets test write failed: {e}")
+        return jsonify(ok=False, error=str(e)), 500
+
+
 _COMMENTS_UI = """<!DOCTYPE html>
 <html lang="en">
 <head>

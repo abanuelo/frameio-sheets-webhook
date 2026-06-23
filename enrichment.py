@@ -1,12 +1,16 @@
-"""Webhook event handlers: fetch full file data, parse, write to Airtable."""
+"""Webhook event handlers: fetch full file data, parse, write to the enabled backends."""
 import os
 import logging
 from frameio_client import get_file, parse_metadata, get_project
-from airtable_writer import upsert_record
 
 logger = logging.getLogger(__name__)
 
 ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
+
+# Backend toggles. Google Sheets is the active path; Airtable is retained but
+# disabled by default. Either or both may run.
+SHEETS_ENABLED = os.environ.get('SHEETS_ENABLED', 'true').lower() == 'true'
+AIRTABLE_ENABLED = os.environ.get('AIRTABLE_ENABLED', 'false').lower() == 'true'
 
 # Frame.io metadata field name → internal key used by airtable_writer.
 # Names are matched case-insensitively (see handle_event), so the casing here
@@ -65,7 +69,7 @@ def _resolve_project_name(event: dict, file_data: dict) -> str | None:
 
 
 def handle_event(event: dict):
-    """Main entry point. Return True if something was written to Airtable."""
+    """Main entry point. Return True if something was written to an enabled backend."""
     event_type = event.get('type', '')
 
     if event_type not in ENRICHMENT_EVENTS:
@@ -110,10 +114,28 @@ def handle_event(event: dict):
             continue
         updates[key] = value
 
-    try:
-        result = upsert_record(updates, table_hint=project_name)
-        logger.info(f"Airtable update result: {result} for file {file_id} (project {project_name!r})")
-        return True
-    except Exception as e:
-        logger.exception(f"Failed to update Airtable for file {file_id}: {e}")
+    if not SHEETS_ENABLED and not AIRTABLE_ENABLED:
+        logger.warning("No write backend enabled (SHEETS_ENABLED/AIRTABLE_ENABLED both off)")
         return False
+
+    wrote = False
+
+    if SHEETS_ENABLED:
+        try:
+            from sheets_writer import upsert_record as sheets_upsert
+            result = sheets_upsert(updates, table_hint=project_name)
+            logger.info(f"Sheets update result: {result} for file {file_id} (project {project_name!r})")
+            wrote = True
+        except Exception as e:
+            logger.exception(f"Failed to update Sheets for file {file_id}: {e}")
+
+    if AIRTABLE_ENABLED:
+        try:
+            from airtable_writer import upsert_record as airtable_upsert
+            result = airtable_upsert(updates, table_hint=project_name)
+            logger.info(f"Airtable update result: {result} for file {file_id} (project {project_name!r})")
+            wrote = True
+        except Exception as e:
+            logger.exception(f"Failed to update Airtable for file {file_id}: {e}")
+
+    return wrote
