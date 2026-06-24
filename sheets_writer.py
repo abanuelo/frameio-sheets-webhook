@@ -151,8 +151,16 @@ def discover_tab(table_hint: str | None = None) -> tuple[str, dict[str, int]]:
     return tab, _header_map_for(tab)
 
 
-def _find_row_by_file_id(tab: str, file_id_col_idx: int, file_id: str) -> int | None:
-    """Return the 1-based row number whose File ID column matches, or None."""
+def _find_row_by_file_ids(tab: str, file_id_col_idx: int, file_ids) -> int | None:
+    """Return the 1-based row number whose File ID column matches any of the
+    given ids, or None.
+
+    Accepts an iterable of file ids so version-stack updates can locate the row
+    by a prior version's File ID. The first matching row (top to bottom) wins.
+    """
+    targets = {fid.strip() for fid in file_ids if fid and fid.strip()}
+    if not targets:
+        return None
     col = _col_letter(file_id_col_idx)
     result = (
         _service()
@@ -162,17 +170,20 @@ def _find_row_by_file_id(tab: str, file_id_col_idx: int, file_id: str) -> int | 
         .execute()
     )
     values = result.get("values", [])
-    target = file_id.strip()
     # Skip the header row (index 0).
     for i, r in enumerate(values):
         if i == 0:
             continue
-        if r and r[0].strip() == target:
+        if r and r[0].strip() in targets:
             return i + 1
     return None
 
 
-def upsert_record(updates: dict, table_hint: str | None = None) -> str:
+def upsert_record(
+    updates: dict,
+    table_hint: str | None = None,
+    also_match_file_ids: list | None = None,
+) -> str:
     """Write Frame.io metadata to a Google Sheet.
 
     `table_hint` (the Frame.io project name) selects which tab to write to,
@@ -181,6 +192,11 @@ def upsert_record(updates: dict, table_hint: str | None = None) -> str:
 
     Finds an existing row by File ID and updates it, or inserts a new one.
     Returns 'updated', 'inserted', or 'skipped'.
+
+    `also_match_file_ids` lets a version-stack update locate the existing row by
+    a prior version's File ID. When matched, the row's File ID cell is rewritten
+    to the new id (it is part of `updates`), so the row carries the latest
+    version. Default None keeps the plain by-File-ID behavior unchanged.
     """
     file_id = updates.get("frameio_file_id", "")
     if not file_id:
@@ -216,7 +232,8 @@ def upsert_record(updates: dict, table_hint: str | None = None) -> str:
         )
         return "skipped"
 
-    row_index = _find_row_by_file_id(tab, file_id_col_idx, file_id)
+    match_ids = [file_id, *(also_match_file_ids or [])]
+    row_index = _find_row_by_file_ids(tab, file_id_col_idx, match_ids)
 
     if row_index is None:
         # Build a full row positioned by header index and append.
@@ -245,6 +262,120 @@ def upsert_record(updates: dict, table_hint: str | None = None) -> str:
     ).execute()
     logger.info(f"Updated row {row_index} in {tab!r} for file {file_id} ({len(data)} fields)")
     return "updated"
+
+
+def _tab_sheet_id(tab: str) -> int | None:
+    """Return the numeric sheetId (gid) for a tab title, or None if not found.
+
+    The gid is required for structural requests like deleting a row (the values
+    API works by title, but deleteDimension needs the gid).
+    """
+    meta = _service().spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    for s in meta.get("sheets", []):
+        props = s.get("properties", {})
+        if props.get("title") == tab:
+            return props.get("sheetId")
+    return None
+
+
+def _cell_value(tab: str, col_idx: int, row_index: int) -> str:
+    """Read a single cell's value (empty string if blank/out of range)."""
+    cell = f"{_col_letter(col_idx)}{row_index}"
+    result = (
+        _service()
+        .spreadsheets()
+        .values()
+        .get(spreadsheetId=SHEET_ID, range=f"'{tab}'!{cell}")
+        .execute()
+    )
+    values = result.get("values") or [[]]
+    row = values[0] if values else []
+    return (row[0] if row else "").strip()
+
+
+def delete_record(
+    file_id: str,
+    table_hint: str | None = None,
+    also_match_file_ids: list | None = None,
+    allowed_prior_statuses: list | None = None,
+) -> str:
+    """Delete the row matching a File ID (used when an asset leaves tracking).
+
+    Resolves the tab from `table_hint` (Frame.io project name). Matches the row
+    by `file_id` or any of `also_match_file_ids` (a version-stack's prior
+    versions). Never inserts. Returns 'deleted' or 'skipped'.
+
+    `allowed_prior_statuses` gates the delete on the row's *existing* Status
+    cell: the row is only deleted if that value is blank or matches one of the
+    allowed statuses (matched case-insensitively). Pass None to delete
+    unconditionally.
+    """
+    if not file_id:
+        raise ValueError("delete_record requires a file_id")
+
+    try:
+        tab, header_map = discover_tab(table_hint)
+    except LookupError:
+        logger.warning(
+            f"No sheet tab matches project {table_hint!r} for file {file_id} "
+            f"— nothing to delete"
+        )
+        return "skipped"
+
+    file_id_col_idx = header_map.get("frameio_file_id")
+    if file_id_col_idx is None:
+        logger.warning(f"Tab {tab!r} has no File ID column; cannot delete file {file_id}")
+        return "skipped"
+
+    match_ids = [file_id, *(also_match_file_ids or [])]
+    row_index = _find_row_by_file_ids(tab, file_id_col_idx, match_ids)
+    if row_index is None:
+        logger.info(f"No row in {tab!r} matches file {file_id} — nothing to delete")
+        return "skipped"
+
+    # Gate on the previous status (the value currently in the row).
+    if allowed_prior_statuses is not None:
+        status_col_idx = header_map.get("status")
+        if status_col_idx is None:
+            logger.warning(
+                f"Tab {tab!r} has no Status column; cannot gate delete by prior "
+                f"status — deleting file {file_id} anyway"
+            )
+        else:
+            prior = _cell_value(tab, status_col_idx, row_index)
+            allowed = {_normalize(s) for s in allowed_prior_statuses}
+            if prior and _normalize(prior) not in allowed:
+                logger.info(
+                    f"Row {row_index} in {tab!r} has prior status {prior!r}, not in "
+                    f"{sorted(allowed_prior_statuses)} — keeping row for file {file_id}"
+                )
+                return "skipped"
+
+    sheet_id = _tab_sheet_id(tab)
+    if sheet_id is None:
+        logger.warning(f"Could not resolve sheetId for tab {tab!r}; cannot delete row")
+        return "skipped"
+
+    # deleteDimension uses 0-based, half-open [start, end) row indices.
+    _service().spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={
+            "requests": [
+                {
+                    "deleteDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": row_index - 1,
+                            "endIndex": row_index,
+                        }
+                    }
+                }
+            ]
+        },
+    ).execute()
+    logger.info(f"Deleted row {row_index} in {tab!r} for file {file_id}")
+    return "deleted"
 
 
 def append_event_row(event: dict):

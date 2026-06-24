@@ -34,7 +34,7 @@ POST /api/webhook          ← app.py verifies HMAC signature
       └─► handle_event()       ← enrichment.py
                │
                ├─ Skips events not in ENRICHMENT_EVENTS list
-               │   (file.created, file.ready, file.label.updated, metadata.value.updated)
+               │   (file.created, file.ready, file.label.updated, file.versioned, metadata.value.updated)
                │
                ├─ Fetches full file data from Frame.io API (includes metadata fields)
                │
@@ -57,6 +57,19 @@ When a file is uploaded to Frame.io a `file.created` or `file.ready` event fires
 ### Metadata Field Changed
 
 When someone edits a custom metadata field on an existing asset a `metadata.value.updated` event fires. The webhook fetches the updated file, locates the existing row by Frame.io File ID, and **updates only the changed cells**. Cells not managed by Frame.io are left untouched.
+
+### Version Stacked (e.g. R1 → R2)
+
+When an edit is version-stacked, Frame.io creates a **new file asset** (new File ID) and fires `file.versioned`. The webhook detects that the asset belongs to a version stack, looks up the stack's other versions, and finds the **existing row** keyed by any prior version's File ID. It then **updates that same row in place** — swapping in the new File ID and the new status — instead of inserting a duplicate row.
+
+### Removed From Tracking (terminal status)
+
+When an asset's `Overall Video Status` becomes a terminal value (`Full Length Lecture`, defined by `REMOVAL_STATUSES` in `enrichment.py`), the asset has left this project's tracking, so the webhook **deletes its row** rather than updating it. Two guards apply:
+
+- The new status must be in `REMOVAL_STATUSES` — statuses like `Approvals` leave the row intact.
+- The row's **previous** status (the value currently in its Status cell) must be one of `DELETABLE_PRIOR_STATUSES` (`R1 Edits` / `R2 Edits` / `R3 Edits`) **or blank**. This prevents deleting a row that reached the terminal status from some other state.
+
+If no matching row exists, the delete is a no-op.
 
 ---
 

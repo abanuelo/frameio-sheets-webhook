@@ -197,6 +197,76 @@ def get_folder_children(account_id: str, folder_id: str) -> list:
     return children
 
 
+def get_version_stack_children(account_id: str, version_stack_id: str) -> list:
+    """Return the files contained in a version stack, fully paginated.
+
+    A version stack is an ordered container of File assets (the successive
+    versions). Mirrors get_folder_children's pagination handling.
+    """
+    children = []
+    cursor = None
+    while True:
+        params = {'page_size': 50}
+        if cursor:
+            params['after'] = cursor
+        result = _api_call(
+            'GET',
+            f'/accounts/{account_id}/version_stacks/{version_stack_id}/children',
+            params=params,
+        )
+        page = result.get('data', [])
+        children.extend(page)
+
+        if not _has_more_pages(result, page):
+            break
+        cursor = _next_cursor(result)
+        if not cursor:
+            break
+    return children
+
+
+def resolve_version_stack_id(event: dict, file_data: dict) -> str | None:
+    """Return the version stack id this event/file belongs to, else None.
+
+    Handles two shapes, since the public docs don't pin down the exact
+    `file.versioned` payload:
+      * The webhook resource is the version stack itself
+        (``resource.type == 'version_stack'``) — use ``resource.id``.
+      * The resource is a File that lives inside a version stack — the file's
+        parent is the stack. In Frame.io v4 a file moved into a stack uses the
+        ``version_stack_id`` as its ``parent_id``, so we look for an explicit
+        version-stack field first, then a parent flagged as a version stack.
+
+    Returns None when the asset is not part of a version stack (the common
+    case). Logs the candidate fields so the exact shape can be confirmed from
+    production logs.
+    """
+    resource = event.get('resource') or {}
+    if resource.get('type') == 'version_stack' and resource.get('id'):
+        return resource['id']
+
+    # Explicit field, if Frame.io exposes one directly on the file.
+    for key in ('version_stack_id', 'version_stack'):
+        val = file_data.get(key)
+        if isinstance(val, dict):
+            val = val.get('id')
+        if val:
+            return val
+
+    # Parent that is itself a version stack.
+    parent_type = file_data.get('parent_type') or (file_data.get('parent') or {}).get('type')
+    parent_id = file_data.get('parent_id') or (file_data.get('parent') or {}).get('id')
+    if parent_type == 'version_stack' and parent_id:
+        return parent_id
+
+    logger.info(
+        "No version stack resolved (resource.type=%r, file parent_type=%r, "
+        "file keys=%s)",
+        resource.get('type'), parent_type, sorted(file_data.keys()),
+    )
+    return None
+
+
 def get_all_files_in_folder(account_id: str, folder_id: str) -> list:
     """Recursively return every non-folder asset under a folder."""
     files = []

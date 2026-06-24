@@ -1,7 +1,13 @@
 """Webhook event handlers: fetch full file data, parse, write to the enabled backends."""
 import os
 import logging
-from frameio_client import get_file, parse_metadata, get_project
+from frameio_client import (
+    get_file,
+    parse_metadata,
+    get_project,
+    resolve_version_stack_id,
+    get_version_stack_children,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +17,26 @@ ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
 # disabled by default. Either or both may run.
 SHEETS_ENABLED = os.environ.get('SHEETS_ENABLED', 'true').lower() == 'true'
 AIRTABLE_ENABLED = os.environ.get('AIRTABLE_ENABLED', 'false').lower() == 'true'
+
+# Statuses that mean an asset has left this project's tracking. When an asset's
+# `Overall Video Status` becomes one of these, its sheet row is deleted rather
+# than updated. Matched case-insensitively (whitespace ignored).
+REMOVAL_STATUSES = ('Full Length Lecture',)
+
+# A row is only deleted on a removal status if its *previous* status (the value
+# already in the sheet's Status column) was one of these editing stages — or
+# blank. This guards against deleting rows that reached the terminal status from
+# some other state (e.g. Approvals). Blank is allowed because an asset can be
+# created with no status and later move straight to the terminal status.
+DELETABLE_PRIOR_STATUSES = ('R1 Edits', 'R2 Edits', 'R3 Edits')
+
+
+def _normalize_status(s: str) -> str:
+    """Lowercase and strip all whitespace for tolerant status comparison."""
+    return "".join(str(s).split()).lower()
+
+
+_REMOVAL_STATUS_SET = {_normalize_status(s) for s in REMOVAL_STATUSES}
 
 # Frame.io metadata field name → internal key used by airtable_writer.
 # Names are matched case-insensitively (see handle_event), so the casing here
@@ -30,6 +56,7 @@ ENRICHMENT_EVENTS = {
     'file.created',
     'file.ready',
     'file.label.updated',
+    'file.versioned',
     'metadata.value.updated',
 }
 
@@ -118,13 +145,53 @@ def handle_event(event: dict):
         logger.warning("No write backend enabled (SHEETS_ENABLED/AIRTABLE_ENABLED both off)")
         return False
 
+    # Version-stack (R1 -> R2): if this asset belongs to a version stack, a prior
+    # version's File ID may already be a sheet row. Collect the sibling File IDs
+    # so the writer updates that row in place (new File ID + status) instead of
+    # inserting a duplicate. Empty for the common non-versioned case.
+    sibling_file_ids: list = []
+    try:
+        version_stack_id = resolve_version_stack_id(event, file_data)
+        if version_stack_id:
+            children = get_version_stack_children(ACCOUNT_ID, version_stack_id)
+            sibling_file_ids = [
+                c.get('id') for c in children
+                if c.get('id') and c.get('id') != file_id
+            ]
+            logger.info(
+                f"File {file_id} is in version stack {version_stack_id} with "
+                f"{len(sibling_file_ids)} prior version(s)"
+            )
+    except Exception as e:
+        logger.warning(f"Version-stack resolution failed for file {file_id}: {e}")
+
+    # Terminal status: the asset has left this project's tracking, so its row is
+    # deleted rather than updated (e.g. moved to "Full Length Lecture").
+    status_value = updates.get('status', '')
+    is_removal = bool(status_value) and _normalize_status(status_value) in _REMOVAL_STATUS_SET
+
     wrote = False
 
     if SHEETS_ENABLED:
         try:
-            from sheets_writer import upsert_record as sheets_upsert
-            result = sheets_upsert(updates, table_hint=project_name)
-            logger.info(f"Sheets update result: {result} for file {file_id} (project {project_name!r})")
+            if is_removal:
+                from sheets_writer import delete_record as sheets_delete
+                result = sheets_delete(
+                    file_id,
+                    table_hint=project_name,
+                    also_match_file_ids=sibling_file_ids,
+                    allowed_prior_statuses=DELETABLE_PRIOR_STATUSES,
+                )
+                logger.info(
+                    f"Sheets delete result: {result} for file {file_id} "
+                    f"(project {project_name!r}, status {status_value!r})"
+                )
+            else:
+                from sheets_writer import upsert_record as sheets_upsert
+                result = sheets_upsert(
+                    updates, table_hint=project_name, also_match_file_ids=sibling_file_ids
+                )
+                logger.info(f"Sheets update result: {result} for file {file_id} (project {project_name!r})")
             wrote = True
         except Exception as e:
             logger.exception(f"Failed to update Sheets for file {file_id}: {e}")
