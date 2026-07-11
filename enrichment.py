@@ -1,5 +1,6 @@
 """Webhook event handlers: fetch full file data, parse, write to the enabled backends."""
 import os
+import json
 import logging
 import requests
 from frameio_client import (
@@ -130,6 +131,15 @@ def _resolve_stack_newest(stack_id: str) -> tuple[str, dict]:
         return '', {}
 
     logger.info(
+        "Version stack %s children (id, name, timestamp): %s",
+        stack_id,
+        [
+            (c.get('id'), c.get('name'),
+             c.get('inserted_at') or c.get('created_at') or c.get('updated_at'))
+            for c in children
+        ],
+    )
+    logger.info(
         f"Version stack {stack_id}: recording newest version {newest['id']} "
         f"({newest.get('name')!r}) of {len(children)} version(s)"
     )
@@ -174,6 +184,10 @@ def handle_event(event: dict):
         logger.info(f"Skipping enrichment for event type: {event_type}")
         return False
 
+    # Diagnostic: raw payload reveals whether the new value ships in the webhook
+    # (so we could read it directly) and whether resource is a file or a stack.
+    logger.info("Raw event %s: %s", event_type, json.dumps(event)[:2000])
+
     file_id, file_data = _resolve_target_file(event)
     if not file_id:
         return False
@@ -204,6 +218,17 @@ def handle_event(event: dict):
         if isinstance(value, list):
             continue
         updates[key] = value
+
+    # Diagnostic: shows exactly what Frame.io returned vs. what we'll write. If
+    # 'status' is missing from `writing` after a status change, get_file gave us
+    # metadata without it (wrong version resolved, or Frame.io read-after-write lag).
+    logger.info(
+        "File %s (%s): metadata=%s; writing=%s",
+        file_id,
+        event_type,
+        {k: (f"[{len(v)} items]" if isinstance(v, list) else v) for k, v in metadata.items()},
+        sorted(updates.keys()),
+    )
 
     if not SHEETS_ENABLED and not AIRTABLE_ENABLED:
         logger.warning("No write backend enabled (SHEETS_ENABLED/AIRTABLE_ENABLED both off)")
