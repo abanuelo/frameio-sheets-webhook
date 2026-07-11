@@ -151,16 +151,17 @@ def discover_tab(table_hint: str | None = None) -> tuple[str, dict[str, int]]:
     return tab, _header_map_for(tab)
 
 
-def _find_row_by_file_ids(tab: str, file_id_col_idx: int, file_ids) -> int | None:
-    """Return the 1-based row number whose File ID column matches any of the
-    given ids, or None.
+def _find_all_rows_by_file_ids(tab: str, file_id_col_idx: int, file_ids) -> list[int]:
+    """Return all 1-based row numbers whose File ID column matches any given id,
+    ordered top to bottom.
 
-    Accepts an iterable of file ids so version-stack updates can locate the row
-    by a prior version's File ID. The first matching row (top to bottom) wins.
+    A version stack lists every version's File ID, so this can return several
+    rows (one per prior version that made it into the sheet). The header row
+    (index 0) is skipped.
     """
     targets = {fid.strip() for fid in file_ids if fid and fid.strip()}
     if not targets:
-        return None
+        return []
     col = _col_letter(file_id_col_idx)
     result = (
         _service()
@@ -170,13 +171,45 @@ def _find_row_by_file_ids(tab: str, file_id_col_idx: int, file_ids) -> int | Non
         .execute()
     )
     values = result.get("values", [])
-    # Skip the header row (index 0).
-    for i, r in enumerate(values):
-        if i == 0:
-            continue
-        if r and r[0].strip() in targets:
-            return i + 1
-    return None
+    return [i + 1 for i, r in enumerate(values) if i and r and r[0].strip() in targets]
+
+
+def _find_row_by_file_ids(tab: str, file_id_col_idx: int, file_ids) -> int | None:
+    """Return the first (top-most) row matching any of the file ids, or None."""
+    rows = _find_all_rows_by_file_ids(tab, file_id_col_idx, file_ids)
+    return rows[0] if rows else None
+
+
+def _delete_rows(tab: str, row_indices: list[int]) -> None:
+    """Delete the given 1-based rows from a tab.
+
+    Deletes bottom-up so earlier deletions don't shift the indices of rows still
+    to be removed.
+    """
+    if not row_indices:
+        return
+    sheet_id = _tab_sheet_id(tab)
+    if sheet_id is None:
+        logger.warning(f"Could not resolve sheetId for tab {tab!r}; cannot delete rows")
+        return
+    _service().spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={
+            "requests": [
+                {
+                    "deleteDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": r - 1,
+                            "endIndex": r,
+                        }
+                    }
+                }
+                for r in sorted(row_indices, reverse=True)
+            ]
+        },
+    ).execute()
 
 
 def upsert_record(
@@ -233,9 +266,9 @@ def upsert_record(
         return "skipped"
 
     match_ids = [file_id, *(also_match_file_ids or [])]
-    row_index = _find_row_by_file_ids(tab, file_id_col_idx, match_ids)
+    rows = _find_all_rows_by_file_ids(tab, file_id_col_idx, match_ids)
 
-    if row_index is None:
+    if not rows:
         # Build a full row positioned by header index and append.
         width = max(cells) + 1
         new_row = [""] * width
@@ -251,6 +284,11 @@ def upsert_record(
         logger.info(f"Inserted new row in {tab!r} for file {file_id}")
         return "inserted"
 
+    # Keep the top-most matching row and update it to the latest version. Any
+    # other matches are prior versions of the same stack, so collapse them —
+    # only one row survives, carrying the newest version.
+    row_index = rows[0]
+
     # Update only the cells that have values — don't overwrite with blanks.
     data = [
         {"range": f"'{tab}'!{_col_letter(idx)}{row_index}", "values": [[value]]}
@@ -260,6 +298,16 @@ def upsert_record(
         spreadsheetId=SHEET_ID,
         body={"valueInputOption": "USER_ENTERED", "data": data},
     ).execute()
+
+    # Deleting only rows below row_index (rows is ascending), so row_index stays valid.
+    dupes = rows[1:]
+    if dupes:
+        _delete_rows(tab, dupes)
+        logger.info(
+            f"Collapsed {len(dupes)} prior-version row(s) in {tab!r} into row "
+            f"{row_index} for file {file_id}"
+        )
+
     logger.info(f"Updated row {row_index} in {tab!r} for file {file_id} ({len(data)} fields)")
     return "updated"
 
