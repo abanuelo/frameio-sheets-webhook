@@ -10,7 +10,6 @@ import requests
 from flask import Flask, request, jsonify, Response, render_template_string
 
 from enrichment import handle_event
-from airtable_writer import upsert_record
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,7 +50,7 @@ def webhook():
     try:
         event = json.loads(raw_body)
 
-        # Enrich and update Airtable if applicable
+        # Enrich and update Google Sheets if applicable
         try:
             handle_event(event)
         except Exception as e:
@@ -163,163 +162,6 @@ def oauth_callback():
     </body>
     </html>
     """
-
-@app.route('/test/accounts', methods=['GET'])
-def test_accounts():
-    """GET /test/accounts — list the accounts this OAuth token can see.
-
-    Use this to find the correct FRAMEIO_ACCOUNT_ID. The currently configured
-    value is echoed back as `configured_account_id` and flagged with `matches`
-    if it appears in the token's accessible accounts.
-    """
-    from frameio_client import get_accounts
-
-    configured = os.environ.get('FRAMEIO_ACCOUNT_ID', '') or None
-    try:
-        accounts = get_accounts()
-    except Exception as e:
-        logger.exception(f"Failed to list accounts: {e}")
-        return jsonify(ok=False, configured_account_id=configured, error=str(e)), 500
-
-    summary = [
-        {'id': a.get('id'), 'name': a.get('display_name') or a.get('name')}
-        for a in accounts
-    ]
-    ids = [a['id'] for a in summary]
-    return jsonify(
-        ok=True,
-        configured_account_id=configured,
-        matches=configured in ids if configured else False,
-        accounts=summary,
-    ), 200
-
-
-@app.route('/test/airtable', methods=['GET'])
-def test_airtable_config():
-    """GET /test/airtable — verify Airtable credentials and table discovery.
-
-    Optional ?project=<name> resolves which table a Frame.io project name would
-    route to (case-insensitive), echoing back its columns. Without it, all
-    tables in the base are listed.
-    """
-    import airtable_writer as aw
-
-    config = dict(
-        base_id=aw.BASE_ID or None,
-        pat_set=bool(aw.PAT),
-    )
-
-    project = request.args.get("project", "").strip() or None
-
-    try:
-        tables = aw._fetch_tables()
-        config["tables"] = [t["name"] for t in tables]
-
-        if project:
-            config["project"] = project
-            try:
-                table_name, cols = aw.discover_table(project)
-                config["resolved_table"] = table_name
-                config["columns"] = cols
-                config["matched"] = True
-            except LookupError:
-                config["resolved_table"] = None
-                config["matched"] = False
-        config["ok"] = True
-    except Exception as e:
-        config["ok"] = False
-        config["error"] = str(e)
-
-    return jsonify(config), 200
-
-
-@app.route('/test/airtable', methods=['POST'])
-def test_airtable_write():
-    """POST /test/airtable — write a sample record to Airtable."""
-    import config
-
-    body = request.get_json(silent=True) or {}
-    file_id = body.get("file_id", "test-file-001")
-
-    # Build a sample keyed by the configured column names.
-    sample = {
-        config.FILE_ID_COLUMN:  file_id,
-        config.FILENAME_COLUMN: "TEST — Airtable Integration Check",
-        config.STATUS_COLUMN:   "Rough Cuts",
-    }
-
-    try:
-        result = upsert_record(sample)
-        return jsonify(ok=True, action=result, payload=sample), 200
-    except Exception as e:
-        logger.exception(f"Airtable test write failed: {e}")
-        return jsonify(ok=False, error=str(e)), 500
-
-
-@app.route('/test/sheets', methods=['GET'])
-def test_sheets_config():
-    """GET /test/sheets — verify Google Sheets credentials and tab discovery.
-
-    Optional ?project=<name> resolves which tab a Frame.io project name would
-    route to (case-insensitive), echoing back its columns. Without it, all
-    tabs in the spreadsheet are listed.
-    """
-    import sheets_writer as sw
-
-    config = dict(
-        sheet_id=sw.SHEET_ID or None,
-        creds_set=bool(sw._CREDS_JSON),
-    )
-
-    project = request.args.get("project", "").strip() or None
-
-    try:
-        config["tabs"] = sw._fetch_tabs()
-
-        if project:
-            config["project"] = project
-            try:
-                tab_name, cols = sw.discover_tab(project)
-                config["resolved_tab"] = tab_name
-                config["columns"] = cols
-                config["matched"] = True
-            except LookupError:
-                config["resolved_tab"] = None
-                config["matched"] = False
-        config["ok"] = True
-    except Exception as e:
-        config["ok"] = False
-        config["error"] = str(e)
-
-    return jsonify(config), 200
-
-
-@app.route('/test/sheets', methods=['POST'])
-def test_sheets_write():
-    """POST /test/sheets — write a sample row to Google Sheets.
-
-    Optional JSON body: {"file_id": ..., "project": <tab name>}.
-    """
-    from sheets_writer import upsert_record as sheets_upsert
-    import config
-
-    body = request.get_json(silent=True) or {}
-    file_id = body.get("file_id", "test-file-001")
-    project = body.get("project")
-
-    # Build a sample keyed by the configured sheet column names.
-    sample = {
-        config.FILE_ID_COLUMN:  file_id,
-        config.FILENAME_COLUMN: "TEST — Sheets Integration Check",
-        config.STATUS_COLUMN:   "Rough Cuts",
-    }
-
-    try:
-        result = sheets_upsert(sample, table_hint=project)
-        return jsonify(ok=True, action=result, payload=sample), 200
-    except Exception as e:
-        logger.exception(f"Sheets test write failed: {e}")
-        return jsonify(ok=False, error=str(e)), 500
 
 
 _COMMENTS_UI = """<!DOCTYPE html>

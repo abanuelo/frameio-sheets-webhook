@@ -2,9 +2,6 @@
 
 Automatically syncs Frame.io asset activity to a Google Sheet. When a new file is uploaded it appears as a new row. When metadata fields on an existing asset change, the corresponding row is updated in place.
 
-> [!NOTE]
-> An Airtable integration is also bundled (in `airtable_writer.py`) but is **disabled by default**. Google Sheets is the active backend. See [Re-enabling Airtable](#re-enabling-airtable) to switch it back on. The two backends are independent — either or both can run at once.
-
 ---
 
 ## Table of Contents
@@ -19,7 +16,6 @@ Automatically syncs Frame.io asset activity to a Google Sheet. When a new file i
    - [Google Sheets Setup](#4-google-sheets-setup)
    - [Verify the Integration](#5-verify-the-integration)
 5. [Sheet Structure](#sheet-structure)
-6. [Re-enabling Airtable](#re-enabling-airtable)
 
 ---
 
@@ -40,7 +36,7 @@ POST /api/webhook          ← app.py verifies HMAC signature
                │
                ├─ Maps Frame.io metadata field names → sheet columns (config.json)
                │
-               └─► upsert_record()   ← sheets_writer.py (and/or airtable_writer.py)
+               └─► upsert_record()   ← sheets_writer.py
                         │
                         ├─ Picks the tab whose name matches the asset's Frame.io project (case-insensitive)
                         ├─ Searches the tab for a matching Frame.io File ID
@@ -48,7 +44,7 @@ POST /api/webhook          ← app.py verifies HMAC signature
                         └─ Not found ──────────────────────────► INSERT new row
 ```
 
-Routing is driven by the `SHEETS_ENABLED` / `AIRTABLE_ENABLED` flags. By default only Sheets runs.
+Writes can be turned off entirely with `SHEETS_ENABLED=false` (e.g. for a dry run).
 
 ### New Asset Uploaded
 
@@ -170,14 +166,6 @@ Matching ignores case and spaces on both sides, so `"MODULE": "Module"` works ev
 
 The target tab is **routed by Frame.io project name** — the writer matches the asset's project name against the tab titles in the spreadsheet (case-insensitively) and writes there. If no tab matches, the update is skipped and logged. Which fields land in which columns is controlled by [`config.json`](#configuration-configjson), not env vars.
 
-### Airtable (disabled by default)
-
-| Variable | Where to get it | Notes |
-|---|---|---|
-| `AIRTABLE_ENABLED` | Set manually | Defaults to `false`. Set `true` to re-activate Airtable writes |
-| `AIRTABLE_PAT` | Airtable → [Developer hub → Personal access tokens](https://airtable.com/create/tokens) | Needs scopes `schema.bases:read`, `data.records:read`, `data.records:write`, and access to your base |
-| `AIRTABLE_BASE_ID` | The base ID from the base URL or [airtable.com/api](https://airtable.com/api) | Starts with `app...` |
-
 > [!NOTE]
 > `ADOBE_REFRESH_TOKEN` can rotate. If the Frame.io API starts returning 401 errors, check Vercel logs — the app will log a warning with the new token value. Update the env var and redeploy.
 
@@ -280,13 +268,12 @@ Lastly, on your [Frame.io profile settings](https://next.frame.io/settings/profi
 
 ### 5. Verify the Integration
 
-Diagnostic endpoints confirm everything is wired up before you rely on live webhooks:
+1. Hit **`GET /health`** — it should return `{"status": "ok"}`, confirming the app is deployed and running.
+2. In Frame.io, change a metadata field (e.g. `Status`) on an asset in a project that has a matching sheet tab.
+3. Watch the Vercel logs. For each event the app logs `File <id> (<event>): writing columns [...]` followed by `Sheets update result: updated/inserted ...`. If a field you expect is missing from `writing columns`, its Frame.io name doesn't match the left-hand side in `config.json`.
+4. Confirm the row appears/updates in the sheet.
 
-- **`GET /test/accounts`** — lists the Frame.io accounts your OAuth token can see and flags whether your configured `FRAMEIO_ACCOUNT_ID` matches one of them. Use this if the Frame.io API returns errors.
-- **`GET /test/sheets`** — verifies the Google credentials and lists every tab in the spreadsheet. Add `?project=<name>` to test routing: it reports which tab that project name resolves to (`resolved_tab`, `matched`) and its `columns` (each header's normalized name → 0-based column index). Cross-check that the columns from your `config.json` appear here.
-- **`POST /test/sheets`** with `{"file_id": "...", "project": "<tab name>"}` writes a sample row (omit `project` to use the first tab).
-
-> The Airtable equivalents `GET /test/airtable` and `POST /test/airtable` remain available for diagnostics when Airtable credentials are configured.
+Common issues surface clearly in the logs: `No sheet tab matches project ...` (tab name mismatch), `no column matches ...` (a `config.json` column isn't in the header row), or a `403` (the sheet isn't shared with the service account).
 
 ---
 
@@ -309,16 +296,4 @@ These are just the defaults — add, remove, or rename columns by editing [`conf
 
 The lookup key is **File ID** — every upsert first searches the File ID column for a row matching the Frame.io file ID before deciding whether to insert or update.
 
-Column names are matched **case-insensitively** (spaces and underscores are ignored too), so a header named `Module`, `MODULE`, or `module` all map to the same field. Columns can appear in any order — they are located by header name, not position. Run `GET /test/sheets?project=<name>` after deploying to see the resolved `columns` for a given project's tab — any configured column without a matching header is logged as a warning and skipped.
-
----
-
-## Re-enabling Airtable
-
-The Airtable writer (`airtable_writer.py`) is fully intact but off by default. To switch it back on:
-
-1. Set `AIRTABLE_ENABLED=true` and provide `AIRTABLE_PAT` + `AIRTABLE_BASE_ID`.
-2. Optionally set `SHEETS_ENABLED=false` if you want Airtable *instead of* Sheets (leave it `true` to write to both).
-3. Redeploy.
-
-Airtable routes by table name and matches columns by name using the same [`config.json`](#configuration-configjson) mappings as the Sheets backend — your Airtable field names just need to match the column names you configured. Use `GET /test/airtable` / `GET /test/airtable?project=<name>` to verify credentials and routing.
+Column names are matched **case-insensitively** (spaces and underscores are ignored too), so a header named `Module`, `MODULE`, or `module` all map to the same field. Columns can appear in any order — they are located by header name, not position. Any configured column without a matching header is logged as a warning and skipped.

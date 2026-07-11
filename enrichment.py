@@ -1,4 +1,4 @@
-"""Webhook event handlers: fetch full file data, parse, write to the enabled backends."""
+"""Webhook event handlers: fetch full file data, parse, write to Google Sheets."""
 import os
 import logging
 import requests
@@ -15,10 +15,8 @@ logger = logging.getLogger(__name__)
 
 ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
 
-# Backend toggles. Google Sheets is the active path; Airtable is retained but
-# disabled by default. Either or both may run.
+# Set SHEETS_ENABLED=false to disable all writes (e.g. for a dry run).
 SHEETS_ENABLED = os.environ.get('SHEETS_ENABLED', 'true').lower() == 'true'
-AIRTABLE_ENABLED = os.environ.get('AIRTABLE_ENABLED', 'false').lower() == 'true'
 
 # Field mappings and status rules come from config.json (see config.py). This
 # lets non-developers add/rename fields without touching Python.
@@ -50,7 +48,7 @@ def _extract_file_id(event: dict) -> str:
 def _resolve_project_name(event: dict, file_data: dict) -> str | None:
     """Resolve the Frame.io project name for an asset.
 
-    The project name is used to pick the matching Airtable table. Returns None
+    The project name is used to pick the matching sheet tab. Returns None
     if the project can't be determined, in which case the caller should skip.
     """
     project_id = (
@@ -165,10 +163,10 @@ def handle_event(event: dict):
     if not file_id:
         return False
 
-    # The project name selects which Airtable table to write to.
+    # The project name selects which sheet tab to write to.
     project_name = _resolve_project_name(event, file_data)
     if not project_name:
-        logger.warning(f"No project name for file {file_id}; cannot route to a table — skipping")
+        logger.warning(f"No project name for file {file_id}; cannot route to a tab — skipping")
         return False
 
     metadata = parse_metadata(file_data)
@@ -193,8 +191,8 @@ def handle_event(event: dict):
 
     logger.info(f"File {file_id} ({event_type}): writing columns {sorted(updates.keys())}")
 
-    if not SHEETS_ENABLED and not AIRTABLE_ENABLED:
-        logger.warning("No write backend enabled (SHEETS_ENABLED/AIRTABLE_ENABLED both off)")
+    if not SHEETS_ENABLED:
+        logger.warning("Writes disabled (SHEETS_ENABLED=false) — skipping")
         return False
 
     # Version-stack (R1 -> R2): if this asset belongs to a version stack, a prior
@@ -222,44 +220,31 @@ def handle_event(event: dict):
     status_value = updates.get(config.STATUS_COLUMN, '')
     is_removal = bool(status_value) and _normalize_status(status_value) in _REMOVAL_STATUS_SET
 
-    wrote = False
-
-    if SHEETS_ENABLED:
-        try:
-            from sheets_writer import upsert_record as sheets_upsert
-            result = None
-            if is_removal:
-                from sheets_writer import delete_record as sheets_delete
-                result = sheets_delete(
-                    file_id,
-                    table_hint=project_name,
-                    also_match_file_ids=sibling_file_ids,
-                    allowed_prior_statuses=config.DELETABLE_PRIOR_STATUSES,
-                )
-                logger.info(
-                    f"Sheets delete result: {result} for file {file_id} "
-                    f"(project {project_name!r}, status {status_value!r})"
-                )
-            # Deletion only applies to R1/R2 Edits → Full Length Lecture. For any
-            # other case (not a removal status, or the delete was skipped because
-            # the prior status wasn't eligible) still write the row so the new
-            # status is captured.
-            if not is_removal or result == "skipped":
-                result = sheets_upsert(
-                    updates, table_hint=project_name, also_match_file_ids=sibling_file_ids
-                )
-                logger.info(f"Sheets update result: {result} for file {file_id} (project {project_name!r})")
-            wrote = True
-        except Exception as e:
-            logger.exception(f"Failed to update Sheets for file {file_id}: {e}")
-
-    if AIRTABLE_ENABLED:
-        try:
-            from airtable_writer import upsert_record as airtable_upsert
-            result = airtable_upsert(updates, table_hint=project_name)
-            logger.info(f"Airtable update result: {result} for file {file_id} (project {project_name!r})")
-            wrote = True
-        except Exception as e:
-            logger.exception(f"Failed to update Airtable for file {file_id}: {e}")
-
-    return wrote
+    try:
+        from sheets_writer import upsert_record as sheets_upsert
+        result = None
+        if is_removal:
+            from sheets_writer import delete_record as sheets_delete
+            result = sheets_delete(
+                file_id,
+                table_hint=project_name,
+                also_match_file_ids=sibling_file_ids,
+                allowed_prior_statuses=config.DELETABLE_PRIOR_STATUSES,
+            )
+            logger.info(
+                f"Sheets delete result: {result} for file {file_id} "
+                f"(project {project_name!r}, status {status_value!r})"
+            )
+        # Deletion only applies to R1/R2 Edits → Full Length Lecture. For any
+        # other case (not a removal status, or the delete was skipped because
+        # the prior status wasn't eligible) still write the row so the new
+        # status is captured.
+        if not is_removal or result == "skipped":
+            result = sheets_upsert(
+                updates, table_hint=project_name, also_match_file_ids=sibling_file_ids
+            )
+            logger.info(f"Sheets update result: {result} for file {file_id} (project {project_name!r})")
+        return True
+    except Exception as e:
+        logger.exception(f"Failed to update Sheets for file {file_id}: {e}")
+        return False
