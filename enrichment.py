@@ -25,11 +25,12 @@ AIRTABLE_ENABLED = os.environ.get('AIRTABLE_ENABLED', 'false').lower() == 'true'
 REMOVAL_STATUSES = ('Full Length Lecture',)
 
 # A row is only deleted on a removal status if its *previous* status (the value
-# already in the sheet's Status column) was one of these editing stages — or
-# blank. This guards against deleting rows that reached the terminal status from
-# some other state (e.g. Approvals). Blank is allowed because an asset can be
-# created with no status and later move straight to the terminal status.
-DELETABLE_PRIOR_STATUSES = ('R1 Edits', 'R2 Edits', 'R3 Edits')
+# already in the sheet's Status column) was one of these editing stages. A video
+# in R1/R2 Edits that becomes "Full Length Lecture" is too long to keep and will
+# be re-uploaded as smaller segments, so its row is removed. From any other prior
+# status (e.g. Not Using, Approved) or a blank status, the row is kept and just
+# updated with the new status.
+DELETABLE_PRIOR_STATUSES = ('R1 Edits', 'R2 Edits')
 
 
 def _normalize_status(s: str) -> str:
@@ -237,6 +238,8 @@ def handle_event(event: dict):
 
     if SHEETS_ENABLED:
         try:
+            from sheets_writer import upsert_record as sheets_upsert
+            result = None
             if is_removal:
                 from sheets_writer import delete_record as sheets_delete
                 result = sheets_delete(
@@ -249,8 +252,11 @@ def handle_event(event: dict):
                     f"Sheets delete result: {result} for file {file_id} "
                     f"(project {project_name!r}, status {status_value!r})"
                 )
-            else:
-                from sheets_writer import upsert_record as sheets_upsert
+            # Deletion only applies to R1/R2 Edits → Full Length Lecture. For any
+            # other case (not a removal status, or the delete was skipped because
+            # the prior status wasn't eligible) still write the row so the new
+            # status is captured.
+            if not is_removal or result == "skipped":
                 result = sheets_upsert(
                     updates, table_hint=project_name, also_match_file_ids=sibling_file_ids
                 )

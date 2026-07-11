@@ -354,9 +354,9 @@ def delete_record(
     versions). Never inserts. Returns 'deleted' or 'skipped'.
 
     `allowed_prior_statuses` gates the delete on the row's *existing* Status
-    cell: the row is only deleted if that value is blank or matches one of the
-    allowed statuses (matched case-insensitively). Pass None to delete
-    unconditionally.
+    cell: the row is only deleted if that value matches one of the allowed
+    statuses (matched case-insensitively). A blank prior status does NOT
+    qualify. Pass None to delete unconditionally.
     """
     if not file_id:
         raise ValueError("delete_record requires a file_id")
@@ -392,7 +392,7 @@ def delete_record(
         else:
             prior = _cell_value(tab, status_col_idx, row_index)
             allowed = {_normalize(s) for s in allowed_prior_statuses}
-            if prior and _normalize(prior) not in allowed:
+            if _normalize(prior) not in allowed:
                 logger.info(
                     f"Row {row_index} in {tab!r} has prior status {prior!r}, not in "
                     f"{sorted(allowed_prior_statuses)} — keeping row for file {file_id}"
