@@ -199,7 +199,7 @@ def test_airtable_config():
     """GET /test/airtable — verify Airtable credentials and table discovery.
 
     Optional ?project=<name> resolves which table a Frame.io project name would
-    route to (case-insensitive), echoing back its field_map. Without it, all
+    route to (case-insensitive), echoing back its columns. Without it, all
     tables in the base are listed.
     """
     import airtable_writer as aw
@@ -218,9 +218,9 @@ def test_airtable_config():
         if project:
             config["project"] = project
             try:
-                table_name, field_map = aw.discover_table(project)
+                table_name, cols = aw.discover_table(project)
                 config["resolved_table"] = table_name
-                config["field_map"] = field_map
+                config["columns"] = cols
                 config["matched"] = True
             except LookupError:
                 config["resolved_table"] = None
@@ -236,16 +236,16 @@ def test_airtable_config():
 @app.route('/test/airtable', methods=['POST'])
 def test_airtable_write():
     """POST /test/airtable — write a sample record to Airtable."""
+    import config
+
     body = request.get_json(silent=True) or {}
     file_id = body.get("file_id", "test-file-001")
 
+    # Build a sample keyed by the configured column names.
     sample = {
-        "frameio_file_id": file_id,
-        "production_id":   "TEST — Airtable Integration Check",
-        "sme":             "Needs Review",
-        "pm":              "Needs Review",
-        "status":          "Rough Cuts",
-        "notes":           "Created by /test/airtable endpoint",
+        config.FILE_ID_COLUMN:  file_id,
+        config.FILENAME_COLUMN: "TEST — Airtable Integration Check",
+        config.STATUS_COLUMN:   "Rough Cuts",
     }
 
     try:
@@ -261,7 +261,7 @@ def test_sheets_config():
     """GET /test/sheets — verify Google Sheets credentials and tab discovery.
 
     Optional ?project=<name> resolves which tab a Frame.io project name would
-    route to (case-insensitive), echoing back its header_map. Without it, all
+    route to (case-insensitive), echoing back its columns. Without it, all
     tabs in the spreadsheet are listed.
     """
     import sheets_writer as sw
@@ -279,9 +279,9 @@ def test_sheets_config():
         if project:
             config["project"] = project
             try:
-                tab_name, header_map = sw.discover_tab(project)
+                tab_name, cols = sw.discover_tab(project)
                 config["resolved_tab"] = tab_name
-                config["header_map"] = header_map
+                config["columns"] = cols
                 config["matched"] = True
             except LookupError:
                 config["resolved_tab"] = None
@@ -301,18 +301,17 @@ def test_sheets_write():
     Optional JSON body: {"file_id": ..., "project": <tab name>}.
     """
     from sheets_writer import upsert_record as sheets_upsert
+    import config
 
     body = request.get_json(silent=True) or {}
     file_id = body.get("file_id", "test-file-001")
     project = body.get("project")
 
+    # Build a sample keyed by the configured sheet column names.
     sample = {
-        "frameio_file_id": file_id,
-        "production_id":   "TEST — Sheets Integration Check",
-        "sme":             "Needs Review",
-        "pm":              "Needs Review",
-        "status":          "Rough Cuts",
-        "notes":           "Created by /test/sheets endpoint",
+        config.FILE_ID_COLUMN:  file_id,
+        config.FILENAME_COLUMN: "TEST — Sheets Integration Check",
+        config.STATUS_COLUMN:   "Rough Cuts",
     }
 
     try:

@@ -10,15 +10,15 @@ Automatically syncs Frame.io asset activity to a Google Sheet. When a new file i
 ## Table of Contents
 
 1. [How It Works](#how-it-works)
-2. [Environment Variables](#environment-variables)
-3. [Setup Guide](#setup-guide)
+2. [Configuration (`config.json`)](#configuration-configjson)
+3. [Environment Variables](#environment-variables)
+4. [Setup Guide](#setup-guide)
    - [Deploy to Vercel](#1-deploy-to-vercel)
    - [Configure the Frame.io Webhook](#2-configure-the-frameio-webhook)
    - [Adobe Developer Console (Frame.io API)](#3-adobe-developer-console-frameio-api)
    - [Google Sheets Setup](#4-google-sheets-setup)
    - [Verify the Integration](#5-verify-the-integration)
-4. [Sheet Structure](#sheet-structure)
-5. [Metadata Field Names](#metadata-field-names)
+5. [Sheet Structure](#sheet-structure)
 6. [Re-enabling Airtable](#re-enabling-airtable)
 
 ---
@@ -38,7 +38,7 @@ POST /api/webhook          ← app.py verifies HMAC signature
                │
                ├─ Fetches full file data from Frame.io API (includes metadata fields)
                │
-               ├─ Maps Frame.io metadata field names → internal keys (METADATA_FIELD_MAP)
+               ├─ Maps Frame.io metadata field names → sheet columns (config.json)
                │
                └─► upsert_record()   ← sheets_writer.py (and/or airtable_writer.py)
                         │
@@ -64,12 +64,83 @@ When an edit is version-stacked, Frame.io creates a **new file asset** (new File
 
 ### Removed From Tracking (terminal status)
 
-When an asset's `Overall Video Status` becomes a terminal value (`Full Length Lecture`, defined by `REMOVAL_STATUSES` in `enrichment.py`), the asset has left this project's tracking, so the webhook **deletes its row** rather than updating it. Two guards apply:
+When an asset's status becomes a terminal value (by default `Full Length Lecture`, set by `removal_statuses` in `config.json`), the asset has left this project's tracking, so the webhook **deletes its row** rather than updating it. Two guards apply:
 
-- The new status must be in `REMOVAL_STATUSES` — statuses like `Approvals` leave the row intact.
-- The row's **previous** status (the value currently in its Status cell) must be one of `DELETABLE_PRIOR_STATUSES` (`R1 Edits` / `R2 Edits` / `R3 Edits`) **or blank**. This prevents deleting a row that reached the terminal status from some other state.
+- The new status must be in `removal_statuses` — any other status just updates the row.
+- The row's **previous** status (the value currently in its Status cell) must be one of `deletable_prior_statuses` (default `R1 Edits` / `R2 Edits`). A blank or any other prior status keeps the row and simply writes the new status.
 
-If no matching row exists, the delete is a no-op.
+If the delete is skipped by these guards, the new status is still written. If no matching row exists, the delete is a no-op.
+
+---
+
+## Configuration (`config.json`)
+
+Everything about *what* syncs — which Frame.io fields go to which sheet columns, and the deletion rules — lives in one file: **`config.json`**. You do not need to touch any Python. Edit it, commit, and redeploy.
+
+If `config.json` is missing or has a typo, the app falls back to the built-in defaults and logs a message — it won't crash.
+
+```json
+{
+  "field_mappings": {
+    "Status": "Status",
+    "PM": "PM",
+    "SME": "SME",
+    "Notes": "Notes",
+    "MODULE": "Module",
+    "ID": "ID"
+  },
+
+  "file_id_column": "File ID",
+  "filename_column": "Name",
+  "status_column": "Status",
+
+  "removal_statuses": ["Full Length Lecture"],
+  "deletable_prior_statuses": ["R1 Edits", "R2 Edits"]
+}
+```
+
+### `field_mappings` — the important one
+
+This is where you add fields. Each line is:
+
+```
+"<Frame.io field name>": "<Google Sheet column header>"
+```
+
+- **Left** = the field name exactly as it appears in Frame.io (the metadata field's name).
+- **Right** = the column header in your Google Sheet where that value should be written.
+
+Matching ignores case and spaces on both sides, so `"MODULE": "Module"` works even if the sheet header is `module`.
+
+**To add a new field to sync:** add one line, make sure a column with that header exists in your sheet tab, and redeploy. For example, to start syncing a Frame.io field called `Editor` into a `Editor` column:
+
+```json
+  "field_mappings": {
+    "Status": "Status",
+    "Editor": "Editor",     ← added
+    ...
+  }
+```
+
+**To stop syncing a field:** delete its line. **To send a field to a differently-named column:** change the right-hand side, e.g. `"Notes": "Producer Notes"`.
+
+### The special columns
+
+| Key | What it is |
+|---|---|
+| `file_id_column` | The sheet column that stores the Frame.io **File ID**. This is how a row is found and updated (and how version stacks collapse). **Required** — the matching column must exist in every tab. |
+| `filename_column` | The sheet column that gets the asset's filename. Set to `""` to skip writing it. |
+| `status_column` | Which sheet column holds the status. Drives the deletion rules. Should be the same column you mapped `Status` to. |
+
+### The deletion rules
+
+| Key | What it does |
+|---|---|
+| `removal_statuses` | When an asset's status changes **to** one of these, its row may be deleted instead of updated. Set to `[]` to never auto-delete. |
+| `deletable_prior_statuses` | The delete only happens if the row's **current** status is one of these first. Any other prior status (or blank) keeps the row and just updates the status. |
+
+> [!TIP]
+> Field names must match Frame.io exactly (aside from case/spaces). If a field silently stops syncing, the most likely cause is a rename in Frame.io — check the webhook logs, which print `writing columns [...]` for every event, then update the left-hand side in `field_mappings`.
 
 ---
 
@@ -97,7 +168,7 @@ If no matching row exists, the delete is a no-op.
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Google Cloud Console → service account → JSON key | Entire JSON file contents as a single value. The service account must be shared (Editor) on the spreadsheet |
 | `SHEETS_ENABLED` | Set manually | Defaults to `true`. Set `false` to disable Sheets writes |
 
-The target tab is **routed by Frame.io project name** — the writer matches the asset's project name against the tab titles in the spreadsheet (case-insensitively) and writes there. If no tab matches, the update is skipped and logged. Column names within the tab (the header row) are matched the same way. There are no per-column env vars to configure.
+The target tab is **routed by Frame.io project name** — the writer matches the asset's project name against the tab titles in the spreadsheet (case-insensitively) and writes there. If no tab matches, the update is skipped and logged. Which fields land in which columns is controlled by [`config.json`](#configuration-configjson), not env vars.
 
 ### Airtable (disabled by default)
 
@@ -172,7 +243,7 @@ Lastly, on your [Frame.io profile settings](https://next.frame.io/settings/profi
    docs.google.com/spreadsheets/d/<SHEET_ID>/edit
    ```
    Save it as `SHEET_ID`.
-2. Create one tab **per Frame.io project**, named to match the project name (case-insensitive — spaces and underscores are ignored). Each tab needs a **header row** (row 1) whose cells match the columns in the [Sheet Structure](#sheet-structure) below; those are matched the same way, so `File ID`, `file_id`, and `fileid` are all equivalent. An asset is written to the tab matching its project name; if none matches, the update is skipped.
+2. Create one tab **per Frame.io project**, named to match the project name (case-insensitive — spaces and underscores are ignored). Each tab needs a **header row** (row 1) whose cells match the column names in your [`config.json`](#configuration-configjson); those are matched the same way, so `File ID`, `file_id`, and `fileid` are all equivalent. An asset is written to the tab matching its project name; if none matches, the update is skipped.
 
 **What a service account is:** a non-human Google identity your app authenticates as. You create one in Google Cloud, download its key as a JSON file, and the *contents* of that file become the `GOOGLE_SERVICE_ACCOUNT_JSON` env var.
 
@@ -212,7 +283,7 @@ Lastly, on your [Frame.io profile settings](https://next.frame.io/settings/profi
 Diagnostic endpoints confirm everything is wired up before you rely on live webhooks:
 
 - **`GET /test/accounts`** — lists the Frame.io accounts your OAuth token can see and flags whether your configured `FRAMEIO_ACCOUNT_ID` matches one of them. Use this if the Frame.io API returns errors.
-- **`GET /test/sheets`** — verifies the Google credentials and lists every tab in the spreadsheet. Add `?project=<name>` to test routing: it reports which tab that project name resolves to (`resolved_tab`, `matched`) and the resolved `header_map` (internal key → 0-based column index). Any internal key missing from the map means no header matched it.
+- **`GET /test/sheets`** — verifies the Google credentials and lists every tab in the spreadsheet. Add `?project=<name>` to test routing: it reports which tab that project name resolves to (`resolved_tab`, `matched`) and its `columns` (each header's normalized name → 0-based column index). Cross-check that the columns from your `config.json` appear here.
 - **`POST /test/sheets`** with `{"file_id": "...", "project": "<tab name>"}` writes a sample row (omit `project` to use the first tab).
 
 > The Airtable equivalents `GET /test/airtable` and `POST /test/airtable` remain available for diagnostics when Airtable credentials are configured.
@@ -221,46 +292,24 @@ Diagnostic endpoints confirm everything is wired up before you rely on live webh
 
 ## Sheet Structure
 
-Each project tab has these columns (header row in row 1), all populated automatically by the webhook:
+Each project tab has a header row (row 1). The default columns, all populated automatically by the webhook, are:
 
 | Column | Frame.io Source |
 |---|---|
-| Name | Asset filename |
-| File ID | Asset ID |
+| Name | Asset filename (`filename_column`) |
+| File ID | Asset ID (`file_id_column`) |
 | SME | `SME` metadata field |
 | PM | `PM` metadata field |
-| Status | `Overall Video Status` metadata field |
+| Status | `Status` metadata field |
 | Notes | `Notes` metadata field |
-| Module | `Module` metadata field |
+| Module | `MODULE` metadata field |
 | ID | `ID` metadata field |
+
+These are just the defaults — add, remove, or rename columns by editing [`config.json`](#configuration-configjson). The `Name` and `File ID` columns come from `filename_column` / `file_id_column`; the rest come from `field_mappings`.
 
 The lookup key is **File ID** — every upsert first searches the File ID column for a row matching the Frame.io file ID before deciding whether to insert or update.
 
-Column names are matched **case-insensitively** (spaces and underscores are ignored too), so a header named `Module`, `MODULE`, or `module` all map to the same field. Columns can appear in any order — they are located by header name, not position. Run `GET /test/sheets?project=<name>` after deploying to see the resolved `header_map` for a given project's tab — any internal key without a matching header is logged as a warning and skipped.
-
----
-
-## Metadata Field Names
-
-> [!IMPORTANT]
-> The field names in `METADATA_FIELD_MAP` (`enrichment.py`) are matched against the `field_definition_name` returned by the Frame.io API. Matching is **case-insensitive**, so `Module`, `MODULE`, and `module` all resolve to the same key — but the rest of the name must still match what is configured in your Frame.io account's metadata schema.
-
-```python
-# enrichment.py
-METADATA_FIELD_MAP = {
-    'Overall Video Status': 'status',
-    'PM':                   'pm',
-    'SME':                  'sme',
-    'Notes':                'notes',
-    'Production ID':        'production_id',
-    'MODULE':               'module',
-    'ID':                   'id',
-}
-```
-
-If a field name drifts in a way casing can't absorb (e.g. renamed from `"PM"` to `"Project Manager"`) the mapping will silently stop syncing that field — update the key here to match.
-
-The internal key (right-hand side) is then matched against your sheet headers by `_INTERNAL_KEYS` in `sheets_writer.py` (and, when enabled, `airtable_writer.py`), also case-insensitively. To sync a brand-new field end to end: add it here, add a matching entry to `_INTERNAL_KEYS`, and make sure a sheet column with that name exists.
+Column names are matched **case-insensitively** (spaces and underscores are ignored too), so a header named `Module`, `MODULE`, or `module` all map to the same field. Columns can appear in any order — they are located by header name, not position. Run `GET /test/sheets?project=<name>` after deploying to see the resolved `columns` for a given project's tab — any configured column without a matching header is logged as a warning and skipped.
 
 ---
 
@@ -272,4 +321,4 @@ The Airtable writer (`airtable_writer.py`) is fully intact but off by default. T
 2. Optionally set `SHEETS_ENABLED=false` if you want Airtable *instead of* Sheets (leave it `true` to write to both).
 3. Redeploy.
 
-Airtable routes by table name and matches columns by name in exactly the same way as the Sheets backend. Use `GET /test/airtable` / `GET /test/airtable?project=<name>` to verify credentials and routing.
+Airtable routes by table name and matches columns by name using the same [`config.json`](#configuration-configjson) mappings as the Sheets backend — your Airtable field names just need to match the column names you configured. Use `GET /test/airtable` / `GET /test/airtable?project=<name>` to verify credentials and routing.

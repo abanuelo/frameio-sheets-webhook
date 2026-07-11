@@ -1,8 +1,9 @@
 """Google Sheets writer — upserts Frame.io video metadata into a spreadsheet.
 
-Mirrors ``airtable_writer``: each Frame.io project maps to a tab matched by name
-(case-insensitive), the tab's header row maps internal keys to columns, and rows
-are upserted by Frame.io File ID.
+Each Frame.io project maps to a tab matched by name (case-insensitive). The
+``updates`` dict is keyed by Google Sheet column name (built in enrichment.py
+from config.json); each key is matched to a header cell by normalized name.
+Rows are upserted by Frame.io File ID (config.FILE_ID_COLUMN).
 """
 import os
 import json
@@ -11,6 +12,8 @@ from datetime import datetime, timezone
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -21,20 +24,6 @@ _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # Append-only event log tab (optional; not wired into the webhook flow).
 EVENTS_TAB = "webhook events"
-
-# Internal key → normalized target for matching against sheet header names.
-# Kept identical to airtable_writer._INTERNAL_KEYS so both writers consume the
-# same `updates` dict built in enrichment.py.
-_INTERNAL_KEYS: dict[str, str] = {
-    "frameio_file_id": "fileid",
-    "production_id": "name",
-    "sme": "sme",
-    "pm": "pm",
-    "status": "status",
-    "notes": "notes",
-    "module": "module",
-    "id": "id",
-}
 
 # Caches populated on first lookup. The service and tab list are built once;
 # header maps are built lazily per tab name.
@@ -110,8 +99,8 @@ def _find_tab(table_hint: str | None) -> str | None:
     return None
 
 
-def _header_map_for(tab: str) -> dict[str, int]:
-    """Build the internal-key → 0-based column index map for a tab (live)."""
+def _columns_for(tab: str) -> dict[str, int]:
+    """Build {normalized header name → 0-based column index} for a tab (live)."""
     result = (
         _service()
         .spreadsheets()
@@ -122,33 +111,21 @@ def _header_map_for(tab: str) -> dict[str, int]:
     header_row = (result.get("values") or [[]])[0]
     columns = {_normalize(h): i for i, h in enumerate(header_row) if h}
     logger.info(f"Tab {tab!r} headers: {header_row}")
-
-    header_map: dict[str, int] = {}
-    for internal_key, norm_target in _INTERNAL_KEYS.items():
-        idx = columns.get(norm_target)
-        if idx is not None:
-            header_map[internal_key] = idx
-        else:
-            logger.warning(
-                f"Tab {tab!r}: no header matches internal key {internal_key!r} "
-                f"(looking for normalized {norm_target!r})"
-            )
-
-    logger.info(f"Header map for {tab!r}: {header_map}")
-    return header_map
+    return columns
 
 
 def discover_tab(table_hint: str | None = None) -> tuple[str, dict[str, int]]:
-    """Resolve the target tab and its header map.
+    """Resolve the target tab and its column map.
 
     With `table_hint` (e.g. a Frame.io project name), the tab is matched by name
-    case-insensitively. Returns (tab_title, header_map).
+    case-insensitively. Returns (tab_title, columns) where `columns` maps a
+    normalized header name to its 0-based column index.
     Raises LookupError if a hint is given but no tab matches.
     """
     tab = _find_tab(table_hint)
     if tab is None:
         raise LookupError(f"No sheet tab matches {table_hint!r}")
-    return tab, _header_map_for(tab)
+    return tab, _columns_for(tab)
 
 
 def _find_all_rows_by_file_ids(tab: str, file_id_col_idx: int, file_ids) -> list[int]:
@@ -230,13 +207,15 @@ def upsert_record(
     a prior version's File ID. When matched, the row's File ID cell is rewritten
     to the new id (it is part of `updates`), so the row carries the latest
     version. Default None keeps the plain by-File-ID behavior unchanged.
+
+    `updates` is keyed by Google Sheet column name (see config.json).
     """
-    file_id = updates.get("frameio_file_id", "")
+    file_id = updates.get(config.FILE_ID_COLUMN, "")
     if not file_id:
-        raise ValueError("updates must include frameio_file_id")
+        raise ValueError(f"updates must include the file-id column {config.FILE_ID_COLUMN!r}")
 
     try:
-        tab, header_map = discover_tab(table_hint)
+        tab, columns = discover_tab(table_hint)
     except LookupError:
         try:
             available = _fetch_tabs()
@@ -248,20 +227,25 @@ def upsert_record(
         )
         return "skipped"
 
-    # Build {column_index: value} from our internal keys.
-    cells = {
-        idx: updates[key]
-        for key, idx in header_map.items()
-        if updates.get(key)
-    }
+    # Match each update's column name to a real header, building {col idx: value}.
+    cells: dict[int, str] = {}
+    for col_name, value in updates.items():
+        if value in (None, ""):
+            continue
+        idx = columns.get(_normalize(col_name))
+        if idx is None:
+            logger.warning(f"Tab {tab!r}: no column matches {col_name!r} — skipping that field")
+            continue
+        cells[idx] = value
     if not cells:
         logger.warning(f"No writable fields for file {file_id} — skipping")
         return "skipped"
 
-    file_id_col_idx = header_map.get("frameio_file_id")
+    file_id_col_idx = columns.get(_normalize(config.FILE_ID_COLUMN))
     if file_id_col_idx is None:
         logger.warning(
-            f"Tab {tab!r} has no File ID column; cannot upsert file {file_id} — skipping"
+            f"Tab {tab!r} has no {config.FILE_ID_COLUMN!r} column; cannot upsert "
+            f"file {file_id} — skipping"
         )
         return "skipped"
 
@@ -362,7 +346,7 @@ def delete_record(
         raise ValueError("delete_record requires a file_id")
 
     try:
-        tab, header_map = discover_tab(table_hint)
+        tab, columns = discover_tab(table_hint)
     except LookupError:
         logger.warning(
             f"No sheet tab matches project {table_hint!r} for file {file_id} "
@@ -370,9 +354,9 @@ def delete_record(
         )
         return "skipped"
 
-    file_id_col_idx = header_map.get("frameio_file_id")
+    file_id_col_idx = columns.get(_normalize(config.FILE_ID_COLUMN))
     if file_id_col_idx is None:
-        logger.warning(f"Tab {tab!r} has no File ID column; cannot delete file {file_id}")
+        logger.warning(f"Tab {tab!r} has no {config.FILE_ID_COLUMN!r} column; cannot delete file {file_id}")
         return "skipped"
 
     match_ids = [file_id, *(also_match_file_ids or [])]
@@ -383,10 +367,10 @@ def delete_record(
 
     # Gate on the previous status (the value currently in the row).
     if allowed_prior_statuses is not None:
-        status_col_idx = header_map.get("status")
+        status_col_idx = columns.get(_normalize(config.STATUS_COLUMN))
         if status_col_idx is None:
             logger.warning(
-                f"Tab {tab!r} has no Status column; cannot gate delete by prior "
+                f"Tab {tab!r} has no {config.STATUS_COLUMN!r} column; cannot gate delete by prior "
                 f"status — deleting file {file_id} anyway"
             )
         else:

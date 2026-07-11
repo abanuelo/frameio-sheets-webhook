@@ -2,6 +2,7 @@
 import os
 import logging
 import requests
+import config
 from frameio_client import (
     get_file,
     parse_metadata,
@@ -19,18 +20,8 @@ ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
 SHEETS_ENABLED = os.environ.get('SHEETS_ENABLED', 'true').lower() == 'true'
 AIRTABLE_ENABLED = os.environ.get('AIRTABLE_ENABLED', 'false').lower() == 'true'
 
-# Statuses that mean an asset has left this project's tracking. When an asset's
-# `Status` becomes one of these, its sheet row is deleted rather than updated.
-# Matched case-insensitively (whitespace ignored).
-REMOVAL_STATUSES = ('Full Length Lecture',)
-
-# A row is only deleted on a removal status if its *previous* status (the value
-# already in the sheet's Status column) was one of these editing stages. A video
-# in R1/R2 Edits that becomes "Full Length Lecture" is too long to keep and will
-# be re-uploaded as smaller segments, so its row is removed. From any other prior
-# status (e.g. Not Using, Approved) or a blank status, the row is kept and just
-# updated with the new status.
-DELETABLE_PRIOR_STATUSES = ('R1 Edits', 'R2 Edits')
+# Field mappings and status rules come from config.json (see config.py). This
+# lets non-developers add/rename fields without touching Python.
 
 
 def _normalize_status(s: str) -> str:
@@ -38,22 +29,9 @@ def _normalize_status(s: str) -> str:
     return "".join(str(s).split()).lower()
 
 
-_REMOVAL_STATUS_SET = {_normalize_status(s) for s in REMOVAL_STATUSES}
+_REMOVAL_STATUS_SET = {_normalize_status(s) for s in config.REMOVAL_STATUSES}
 
-# Frame.io metadata field name → internal key used by airtable_writer.
-# Names are matched case-insensitively (see handle_event), so the casing here
-# is just for readability.
-METADATA_FIELD_MAP = {
-    'Status': 'status',
-    'PM': 'pm',
-    'SME': 'sme',
-    'Notes': 'notes',
-    'Production ID': 'production_id',
-    'MODULE': 'module',
-    'ID': 'id',
-}
-
-# Events that warrant fetching full file + updating Airtable
+# Events that warrant fetching full file + updating the backend
 ENRICHMENT_EVENTS = {
     'file.created',
     'file.ready',
@@ -194,27 +172,26 @@ def handle_event(event: dict):
         return False
 
     metadata = parse_metadata(file_data)
-
-    # Filename goes into the Name (Production ID) column
     filename = file_data.get('name', '')
 
-    updates = {
-        'frameio_file_id': file_id,
-        'production_id': filename,
-    }
+    # `updates` is keyed by Google Sheet column name (from config.json). The File
+    # ID and filename are always available; metadata fields are mapped by config.
+    updates: dict = {}
+    if config.FILE_ID_COLUMN:
+        updates[config.FILE_ID_COLUMN] = file_id
+    if config.FILENAME_COLUMN:
+        updates[config.FILENAME_COLUMN] = filename
 
-    # Map Frame.io metadata fields to Airtable columns.
-    # Match field names case-insensitively so "Module"/"MODULE"/"module" all work.
+    # Map configured Frame.io metadata fields → sheet columns. Match field names
+    # case-insensitively so "Module"/"MODULE"/"module" all work.
     metadata_ci = {name.lower(): val for name, val in metadata.items()}
-    for fio_field_name, key in METADATA_FIELD_MAP.items():
+    for fio_field_name, column in config.FIELD_MAPPINGS.items():
         value = metadata_ci.get(fio_field_name.lower())
-        if value is None:
+        if value is None or isinstance(value, list):
             continue
-        if isinstance(value, list):
-            continue
-        updates[key] = value
+        updates[column] = value
 
-    logger.info(f"File {file_id} ({event_type}): writing keys {sorted(updates.keys())}")
+    logger.info(f"File {file_id} ({event_type}): writing columns {sorted(updates.keys())}")
 
     if not SHEETS_ENABLED and not AIRTABLE_ENABLED:
         logger.warning("No write backend enabled (SHEETS_ENABLED/AIRTABLE_ENABLED both off)")
@@ -242,7 +219,7 @@ def handle_event(event: dict):
 
     # Terminal status: the asset has left this project's tracking, so its row is
     # deleted rather than updated (e.g. moved to "Full Length Lecture").
-    status_value = updates.get('status', '')
+    status_value = updates.get(config.STATUS_COLUMN, '')
     is_removal = bool(status_value) and _normalize_status(status_value) in _REMOVAL_STATUS_SET
 
     wrote = False
@@ -257,7 +234,7 @@ def handle_event(event: dict):
                     file_id,
                     table_hint=project_name,
                     also_match_file_ids=sibling_file_ids,
-                    allowed_prior_statuses=DELETABLE_PRIOR_STATUSES,
+                    allowed_prior_statuses=config.DELETABLE_PRIOR_STATUSES,
                 )
                 logger.info(
                     f"Sheets delete result: {result} for file {file_id} "
