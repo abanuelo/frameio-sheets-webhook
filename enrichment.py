@@ -1,6 +1,5 @@
 """Webhook event handlers: fetch full file data, parse, write to the enabled backends."""
 import os
-import json
 import logging
 import requests
 from frameio_client import (
@@ -21,8 +20,8 @@ SHEETS_ENABLED = os.environ.get('SHEETS_ENABLED', 'true').lower() == 'true'
 AIRTABLE_ENABLED = os.environ.get('AIRTABLE_ENABLED', 'false').lower() == 'true'
 
 # Statuses that mean an asset has left this project's tracking. When an asset's
-# `Overall Video Status` becomes one of these, its sheet row is deleted rather
-# than updated. Matched case-insensitively (whitespace ignored).
+# `Status` becomes one of these, its sheet row is deleted rather than updated.
+# Matched case-insensitively (whitespace ignored).
 REMOVAL_STATUSES = ('Full Length Lecture',)
 
 # A row is only deleted on a removal status if its *previous* status (the value
@@ -45,7 +44,7 @@ _REMOVAL_STATUS_SET = {_normalize_status(s) for s in REMOVAL_STATUSES}
 # Names are matched case-insensitively (see handle_event), so the casing here
 # is just for readability.
 METADATA_FIELD_MAP = {
-    'Overall Video Status': 'status',
+    'Status': 'status',
     'PM': 'pm',
     'SME': 'sme',
     'Notes': 'notes',
@@ -184,10 +183,6 @@ def handle_event(event: dict):
         logger.info(f"Skipping enrichment for event type: {event_type}")
         return False
 
-    # Diagnostic: raw payload reveals whether the new value ships in the webhook
-    # (so we could read it directly) and whether resource is a file or a stack.
-    logger.info("Raw event %s: %s", event_type, json.dumps(event)[:2000])
-
     file_id, file_data = _resolve_target_file(event)
     if not file_id:
         return False
@@ -219,16 +214,7 @@ def handle_event(event: dict):
             continue
         updates[key] = value
 
-    # Diagnostic: shows exactly what Frame.io returned vs. what we'll write. If
-    # 'status' is missing from `writing` after a status change, get_file gave us
-    # metadata without it (wrong version resolved, or Frame.io read-after-write lag).
-    logger.info(
-        "File %s (%s): metadata=%s; writing=%s",
-        file_id,
-        event_type,
-        {k: (f"[{len(v)} items]" if isinstance(v, list) else v) for k, v in metadata.items()},
-        sorted(updates.keys()),
-    )
+    logger.info(f"File {file_id} ({event_type}): writing keys {sorted(updates.keys())}")
 
     if not SHEETS_ENABLED and not AIRTABLE_ENABLED:
         logger.warning("No write backend enabled (SHEETS_ENABLED/AIRTABLE_ENABLED both off)")
