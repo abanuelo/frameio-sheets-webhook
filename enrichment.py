@@ -1,6 +1,7 @@
 """Webhook event handlers: fetch full file data, parse, write to the enabled backends."""
 import os
 import logging
+import requests
 from frameio_client import (
     get_file,
     parse_metadata,
@@ -95,6 +96,75 @@ def _resolve_project_name(event: dict, file_data: dict) -> str | None:
     return name
 
 
+def _newest_child(children: list) -> dict | None:
+    """Pick the most recent version in a stack.
+
+    Frame.io doesn't document the child ordering, so sort by whatever timestamp
+    the child exposes and fall back to the last item if none is present.
+    ponytail: timestamp heuristic — the chosen version is logged by the caller,
+    so if it ever picks wrong we can pin the real field/order from prod logs.
+    """
+    if not children:
+        return None
+
+    def ts(c: dict) -> str:
+        return c.get('inserted_at') or c.get('created_at') or c.get('updated_at') or ''
+
+    if any(ts(c) for c in children):
+        return max(children, key=ts)
+    return children[-1]
+
+
+def _resolve_stack_newest(stack_id: str) -> tuple[str, dict]:
+    """Resolve (file_id, file_data) for the newest version in a version stack."""
+    try:
+        children = get_version_stack_children(ACCOUNT_ID, stack_id)
+    except Exception as e:
+        logger.exception(f"Failed to fetch version stack {stack_id}: {e}")
+        return '', {}
+
+    newest = _newest_child(children)
+    if not newest or not newest.get('id'):
+        logger.warning(f"Version stack {stack_id} has no resolvable versions; skipping")
+        return '', {}
+
+    logger.info(
+        f"Version stack {stack_id}: recording newest version {newest['id']} "
+        f"({newest.get('name')!r}) of {len(children)} version(s)"
+    )
+    try:
+        return newest['id'], get_file(ACCOUNT_ID, newest['id'])
+    except Exception as e:
+        logger.exception(f"Failed to fetch newest version {newest['id']}: {e}")
+        return '', {}
+
+
+def _resolve_target_file(event: dict) -> tuple[str, dict]:
+    """Resolve the (file_id, file_data) to enrich for this event.
+
+    Most events point at a file. A `file.versioned` event points at the version
+    stack instead, and GET /files/{stack_id} returns 422 — so on a 422 we retry
+    the id as a version stack and record its newest version. Returns ('', {})
+    when nothing usable resolves.
+    """
+    file_id = _extract_file_id(event)
+    if not file_id:
+        logger.warning(f"No file_id in event {event.get('id')}, skipping enrichment")
+        return '', {}
+
+    try:
+        return file_id, get_file(ACCOUNT_ID, file_id)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 422:
+            logger.info(f"{file_id} is not a file (422) — resolving as a version stack")
+            return _resolve_stack_newest(file_id)
+        logger.exception(f"Failed to fetch file {file_id}: {e}")
+        return '', {}
+    except Exception as e:
+        logger.exception(f"Failed to fetch file {file_id}: {e}")
+        return '', {}
+
+
 def handle_event(event: dict):
     """Main entry point. Return True if something was written to an enabled backend."""
     event_type = event.get('type', '')
@@ -103,15 +173,8 @@ def handle_event(event: dict):
         logger.info(f"Skipping enrichment for event type: {event_type}")
         return False
 
-    file_id = _extract_file_id(event)
+    file_id, file_data = _resolve_target_file(event)
     if not file_id:
-        logger.warning(f"No file_id in event {event.get('id')}, skipping enrichment")
-        return False
-
-    try:
-        file_data = get_file(ACCOUNT_ID, file_id)
-    except Exception as e:
-        logger.exception(f"Failed to fetch file {file_id}: {e}")
         return False
 
     # The project name selects which Airtable table to write to.
