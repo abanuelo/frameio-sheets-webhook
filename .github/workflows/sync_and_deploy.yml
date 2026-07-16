@@ -1,0 +1,78 @@
+name: Sync secrets & deploy to Vercel
+
+# Manual trigger only -- run from the Actions tab (or `gh workflow run`)
+# whenever you want to push current GitHub secrets to Vercel and redeploy.
+on:
+  workflow_dispatch:
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Step 1: reconcile Vercel's Production env vars against GitHub's.
+      # scripts/sync_vercel_env.py PATCHes existing vars / POSTs new ones via
+      # the Vercel REST API -- see that file for the full list it manages.
+      - name: Sync env vars to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          FRAMEIO_SIGNING_SECRET: ${{ secrets.FRAMEIO_SIGNING_SECRET }}
+          FRAMEIO_ACCOUNT_ID: ${{ secrets.FRAMEIO_ACCOUNT_ID }}
+          ADOBE_CLIENT_ID: ${{ secrets.ADOBE_CLIENT_ID }}
+          ADOBE_CLIENT_SECRET: ${{ secrets.ADOBE_CLIENT_SECRET }}
+          ADOBE_REFRESH_TOKEN: ${{ secrets.ADOBE_REFRESH_TOKEN }}
+          OAUTH_CALLBACK_ENABLED: ${{ secrets.OAUTH_CALLBACK_ENABLED }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEETS_ENABLED: ${{ secrets.SHEETS_ENABLED }}
+        run: python scripts/sync_vercel_env.py
+
+      # Step 2: trigger the actual deploy. A brand-new/updated env var only
+      # takes effect on the *next* deployment, so this step is what makes the
+      # sync above actually reach the running app.
+      - name: Install Vercel CLI
+        run: npm install --global vercel
+
+      - name: Deploy to Vercel (production)
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          # `vercel deploy` prints the live deployment URL as its last line of
+          # stdout, and exits non-zero on its own if the build/deploy fails --
+          # that failure alone already fails this job.
+          DEPLOYMENT_URL=$(vercel deploy --prod --yes --token="$VERCEL_TOKEN")
+          echo "Deployed to $DEPLOYMENT_URL"
+          echo "url=$DEPLOYMENT_URL" >> "$GITHUB_OUTPUT"
+
+      # Step 3: confirm the deployed app is actually up, not just that the
+      # CLI exited 0. Hits the /health endpoint this app already exposes
+      # (README: "should return {"status": "ok"}"), retrying briefly in case
+      # the new deployment needs a few seconds to come online.
+      - name: Verify deployment health
+        run: |
+          set -euo pipefail
+          URL="${{ steps.deploy.outputs.url }}/health"
+          echo "Checking $URL"
+          for attempt in 1 2 3 4 5; do
+            http_code=$(curl -sS -o /tmp/health.json -w "%{http_code}" "$URL" || echo "000")
+            if [ "$http_code" = "200" ] && grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' /tmp/health.json; then
+              echo "Health check passed: $(cat /tmp/health.json)"
+              exit 0
+            fi
+            echo "Attempt $attempt: http $http_code, retrying in 5s..."
+            sleep 5
+          done
+          echo "Health check failed after 5 attempts"
+          cat /tmp/health.json 2>/dev/null || true
+          exit 1
