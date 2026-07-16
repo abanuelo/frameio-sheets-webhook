@@ -62,7 +62,7 @@ jobs:
       - name: Verify deployment health
         run: |
           set -euo pipefail
-          URL="${{ steps.deploy.outputs.url }}"
+          URL="https://frameio-sheets-webhook.vercel.app"
           echo "Checking $URL"
           for attempt in 1 2 3 4 5; do
             http_code=$(curl -sS -o /tmp/health.json -w "%{http_code}" "$URL" || echo "000")
