@@ -136,7 +136,11 @@ def oauth_callback():
         return f"Token exchange failed: {response.text}", 500
     
     tokens = response.json()
-    
+
+    import token_store
+    if tokens.get('refresh_token'):
+        token_store.save_refresh_token(tokens['refresh_token'])
+
     return f"""
     <html>
     <body style="font-family: monospace; padding: 20px; background: #f5f5f5;">
@@ -418,6 +422,26 @@ def comments_export():
         mimetype='text/csv',
         headers={'Content-Disposition': f'attachment; filename="{filename}"'},
     )
+
+
+@app.route('/cron/refresh', methods=['GET'])
+def cron_refresh():
+    """Daily keep-alive: forces a real token refresh so the Adobe refresh
+    token never sits idle past its ~14-day expiry. Invoked by Vercel Cron,
+    which sends Authorization: Bearer <CRON_SECRET>."""
+    expected = os.environ.get('CRON_SECRET', '')
+    if not expected or request.headers.get('Authorization', '') != f'Bearer {expected}':
+        return 'unauthorized', 401
+
+    import frameio_client
+    frameio_client._token_cache["access_token"] = None
+    frameio_client._token_cache["expires_at"] = 0
+    try:
+        frameio_client.get_access_token()
+    except Exception as e:
+        logger.exception("Cron token refresh failed")
+        return jsonify(ok=False, error=str(e)), 500
+    return jsonify(ok=True), 200
 
 
 @app.route('/health', methods=['GET'])

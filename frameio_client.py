@@ -4,6 +4,8 @@ import time
 import logging
 import requests
 
+import token_store
+
 logger = logging.getLogger(__name__)
 
 ADOBE_IMS_TOKEN_URL = "https://ims-na1.adobelogin.com/ims/token/v3"
@@ -16,17 +18,18 @@ def get_access_token() -> str:
     if _token_cache["access_token"] and time.time() < _token_cache["expires_at"] - 60:
         return _token_cache["access_token"]
 
+    refresh_token = token_store.get_refresh_token()
     response = requests.post(
         ADOBE_IMS_TOKEN_URL,
         data={
             'grant_type': 'refresh_token',
             'client_id': os.environ['ADOBE_CLIENT_ID'],
             'client_secret': os.environ['ADOBE_CLIENT_SECRET'],
-            'refresh_token': os.environ['ADOBE_REFRESH_TOKEN'],
+            'refresh_token': refresh_token,
         },
         timeout=10,
     )
-    
+
     if response.status_code != 200:
         logger.error(f"Token refresh failed: {response.status_code} {response.text}")
         raise RuntimeError(f"Failed to refresh access token: {response.text}")
@@ -34,11 +37,12 @@ def get_access_token() -> str:
     data = response.json()
     _token_cache["access_token"] = data['access_token']
     _token_cache["expires_at"] = time.time() + data['expires_in']
-    
+
     new_refresh = data.get('refresh_token')
-    if new_refresh and new_refresh != os.environ['ADOBE_REFRESH_TOKEN']:
-        logger.warning("Adobe rotated the refresh token. Update ADOBE_REFRESH_TOKEN to: %s", new_refresh)
-    
+    if new_refresh and new_refresh != refresh_token:
+        logger.info("Adobe rotated the refresh token — persisting")
+        token_store.save_refresh_token(new_refresh)
+
     return _token_cache["access_token"]
 
 

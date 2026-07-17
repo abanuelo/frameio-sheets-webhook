@@ -153,8 +153,11 @@ Matching ignores case and spaces on both sides, so `"MODULE": "Module"` works ev
 | `FRAMEIO_ACCOUNT_ID` | Frame.io URL: `next.frame.io/?a=<this value>` | Required to call the Frame.io v4 API |
 | `ADOBE_CLIENT_ID` | Adobe Developer Console → your project | OAuth app credentials |
 | `ADOBE_CLIENT_SECRET` | Adobe Developer Console → your project | OAuth app credentials |
-| `ADOBE_REFRESH_TOKEN` | Captured via the one-time `/oauth/callback` flow (see below) | Long-lived token; rotate if Adobe warns you it changed |
+| `ADOBE_REFRESH_TOKEN` | Captured via the one-time `/oauth/callback` flow (see below) | Bootstrap only — after the first refresh the current token lives in Vercel KV and rotates automatically |
 | `OAUTH_CALLBACK_ENABLED` | Set manually | `true` only during the one-time OAuth setup, then set to `false` |
+| `KV_REST_API_URL` | Auto-injected by the Upstash Redis integration (see below) | Persists rotated refresh tokens across deploys |
+| `KV_REST_API_TOKEN` | Auto-injected by the Upstash Redis integration | |
+| `CRON_SECRET` | Set manually — any random string, 16+ chars | Authenticates the daily `/cron/refresh` keep-alive ping |
 
 ### Google Sheets
 
@@ -167,7 +170,7 @@ Matching ignores case and spaces on both sides, so `"MODULE": "Module"` works ev
 The target tab is **routed by Frame.io project name** — the writer matches the asset's project name against the tab titles in the spreadsheet (case-insensitively) and writes there. If no tab matches, the update is skipped and logged. Which fields land in which columns is controlled by [`config.json`](#configuration-configjson), not env vars.
 
 > [!NOTE]
-> `ADOBE_REFRESH_TOKEN` can rotate. If the Frame.io API starts returning 401 errors, check Vercel logs — the app will log a warning with the new token value. Update the env var and redeploy.
+> **Token rotation is automatic.** When Adobe rotates the refresh token, the app persists the new one to Vercel KV (Upstash Redis) — no env var update or redeploy needed. A daily Vercel Cron job (`/cron/refresh`, see `vercel.json`) forces a refresh so the token never sits idle past Adobe's ~14-day expiry. Setup: install the **Upstash Redis** integration from the Vercel Marketplace (injects `KV_REST_API_URL`/`KV_REST_API_TOKEN`) and set a `CRON_SECRET` env var. Without KV configured, the app falls back to the old behavior: rotations are logged and `ADOBE_REFRESH_TOKEN` must be updated manually.
 
 ---
 

@@ -36,7 +36,10 @@ ENV_VARS = [
     "FRAMEIO_ACCOUNT_ID",
     "ADOBE_CLIENT_ID",
     "ADOBE_CLIENT_SECRET",
-    "ADOBE_REFRESH_TOKEN",
+    # ADOBE_REFRESH_TOKEN deliberately NOT synced: the live token lives in
+    # Vercel KV and rotates automatically (see token_store.py). Pushing a
+    # GitHub-secret copy here would overwrite the bootstrap var with a stale,
+    # already-revoked token.
     "OAUTH_CALLBACK_ENABLED",
     "SHEET_ID",
     "GOOGLE_SERVICE_ACCOUNT_JSON",

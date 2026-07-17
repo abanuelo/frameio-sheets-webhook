@@ -27,7 +27,6 @@ jobs:
           FRAMEIO_ACCOUNT_ID: ${{ secrets.FRAMEIO_ACCOUNT_ID }}
           ADOBE_CLIENT_ID: ${{ secrets.ADOBE_CLIENT_ID }}
           ADOBE_CLIENT_SECRET: ${{ secrets.ADOBE_CLIENT_SECRET }}
-          ADOBE_REFRESH_TOKEN: ${{ secrets.ADOBE_REFRESH_TOKEN }}
           OAUTH_CALLBACK_ENABLED: ${{ secrets.OAUTH_CALLBACK_ENABLED }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
