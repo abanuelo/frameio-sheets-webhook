@@ -9,14 +9,5 @@
     "Notes": "Notes",
     "MODULE": "Module",
     "ID": "ID"
-  },
-
-  "_help_columns": "Which sheet columns hold the File ID (used to find the right row), the asset filename, and the status. file_id_column is required.",
-  "file_id_column": "File ID",
-  "filename_column": "Name",
-  "status_column": "Status",
-
-  "_help_removal": "A row is deleted (instead of updated) only when its status changes TO one of removal_statuses AND its current status is one of deletable_prior_statuses. Leave removal_statuses empty ([]) to never auto-delete.",
-  "removal_statuses": ["Full Length Lecture"],
-  "deletable_prior_statuses": ["R1 Edits", "R2 Edits"]
+  }
 }

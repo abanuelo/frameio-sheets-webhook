@@ -1,8 +1,8 @@
 """User configuration loader.
 
-Reads ``config.json`` (Frame.io field → Google Sheet column mappings, plus the
-status rules) with safe built-in defaults, so the app still runs if that file is
-missing or malformed. Loaded once at import.
+Reads ``config.json`` (Frame.io field → Google Sheet column mappings) with a
+safe built-in default, so the app still runs if that file is missing or
+malformed. Loaded once at import.
 
 Non-developers should only ever need to edit ``config.json`` — never this file.
 """
@@ -12,7 +12,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Fallbacks used when config.json is absent or a key is omitted. These mirror the
+# Fallback used when config.json is absent or the key is omitted. Mirrors the
 # original hard-coded behavior.
 _DEFAULTS = {
     "field_mappings": {
@@ -23,11 +23,6 @@ _DEFAULTS = {
         "MODULE": "Module",
         "ID": "ID",
     },
-    "file_id_column": "File ID",
-    "filename_column": "Name",
-    "status_column": "Status",
-    "removal_statuses": ["Full Length Lecture"],
-    "deletable_prior_statuses": ["R1 Edits", "R2 Edits"],
 }
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
@@ -56,13 +51,8 @@ _cfg = _load()
 
 # Frame.io metadata field name → Google Sheet column header.
 FIELD_MAPPINGS: dict = _cfg["field_mappings"]
-# Sheet column that stores the Frame.io File ID (used to find/update the row).
-FILE_ID_COLUMN: str = _cfg["file_id_column"]
-# Sheet column for the asset's filename ("" to skip writing it).
-FILENAME_COLUMN: str = _cfg["filename_column"]
-# Sheet column that holds the status (drives the deletion rules below).
-STATUS_COLUMN: str = _cfg["status_column"]
-# When the status becomes one of these, the row may be deleted (see below).
-REMOVAL_STATUSES: tuple = tuple(_cfg["removal_statuses"])
-# ...but only if the row's *current* status is one of these first.
-DELETABLE_PRIOR_STATUSES: tuple = tuple(_cfg["deletable_prior_statuses"])
+# Sheet column that stores the Frame.io File ID (used to find/update the row,
+# and to collapse version stacks). Fixed — not configurable.
+FILE_ID_COLUMN: str = "File ID"
+# Sheet column for the asset's filename. Fixed — not configurable.
+FILENAME_COLUMN: str = "Name"

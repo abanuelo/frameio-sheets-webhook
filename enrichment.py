@@ -18,16 +18,8 @@ ACCOUNT_ID = os.environ['FRAMEIO_ACCOUNT_ID']
 # Set SHEETS_ENABLED=false to disable all writes (e.g. for a dry run).
 SHEETS_ENABLED = os.environ.get('SHEETS_ENABLED', 'true').lower() == 'true'
 
-# Field mappings and status rules come from config.json (see config.py). This
-# lets non-developers add/rename fields without touching Python.
-
-
-def _normalize_status(s: str) -> str:
-    """Lowercase and strip all whitespace for tolerant status comparison."""
-    return "".join(str(s).split()).lower()
-
-
-_REMOVAL_STATUS_SET = {_normalize_status(s) for s in config.REMOVAL_STATUSES}
+# Field mappings come from config.json (see config.py). This lets
+# non-developers add/rename fields without touching Python.
 
 # Events that warrant fetching full file + updating the backend
 ENRICHMENT_EVENTS = {
@@ -215,35 +207,12 @@ def handle_event(event: dict):
     except Exception as e:
         logger.warning(f"Version-stack resolution failed for file {file_id}: {e}")
 
-    # Terminal status: the asset has left this project's tracking, so its row is
-    # deleted rather than updated (e.g. moved to "Full Length Lecture").
-    status_value = updates.get(config.STATUS_COLUMN, '')
-    is_removal = bool(status_value) and _normalize_status(status_value) in _REMOVAL_STATUS_SET
-
     try:
         from sheets_writer import upsert_record as sheets_upsert
-        result = None
-        if is_removal:
-            from sheets_writer import delete_record as sheets_delete
-            result = sheets_delete(
-                file_id,
-                table_hint=project_name,
-                also_match_file_ids=sibling_file_ids,
-                allowed_prior_statuses=config.DELETABLE_PRIOR_STATUSES,
-            )
-            logger.info(
-                f"Sheets delete result: {result} for file {file_id} "
-                f"(project {project_name!r}, status {status_value!r})"
-            )
-        # Deletion only applies to R1/R2 Edits → Full Length Lecture. For any
-        # other case (not a removal status, or the delete was skipped because
-        # the prior status wasn't eligible) still write the row so the new
-        # status is captured.
-        if not is_removal or result == "skipped":
-            result = sheets_upsert(
-                updates, table_hint=project_name, also_match_file_ids=sibling_file_ids
-            )
-            logger.info(f"Sheets update result: {result} for file {file_id} (project {project_name!r})")
+        result = sheets_upsert(
+            updates, table_hint=project_name, also_match_file_ids=sibling_file_ids
+        )
+        logger.info(f"Sheets update result: {result} for file {file_id} (project {project_name!r})")
         return True
     except Exception as e:
         logger.exception(f"Failed to update Sheets for file {file_id}: {e}")
