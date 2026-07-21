@@ -222,9 +222,11 @@ def upsert_record(
         return "skipped"
 
     # Match each update's column name to a real header, building {col idx: value}.
+    # A field Frame.io reports as empty ("") is written through so the sheet
+    # cell is cleared to match; only genuinely-absent fields (None) are skipped.
     cells: dict[int, str] = {}
     for col_name, value in updates.items():
-        if value in (None, ""):
+        if value is None:
             continue
         idx = columns.get(_normalize(col_name))
         if idx is None:
@@ -267,7 +269,8 @@ def upsert_record(
     # only one row survives, carrying the newest version.
     row_index = rows[0]
 
-    # Update only the cells that have values — don't overwrite with blanks.
+    # Write every mapped cell, including ones cleared in Frame.io (empty string),
+    # so the row mirrors the current Frame.io state.
     data = [
         {"range": f"'{tab}'!{_col_letter(idx)}{row_index}", "values": [[value]]}
         for idx, value in cells.items()

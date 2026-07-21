@@ -25,6 +25,7 @@ SHEETS_ENABLED = os.environ.get('SHEETS_ENABLED', 'true').lower() == 'true'
 ENRICHMENT_EVENTS = {
     'file.created',
     'file.ready',
+    'file.updated',  # fires on rename — keeps the Name column in sync
     'file.label.updated',
     'file.versioned',
     'metadata.value.updated',
