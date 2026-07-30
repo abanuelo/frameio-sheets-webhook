@@ -116,7 +116,7 @@ Edit secrets at **[github.com/abanuelo/frameio-sheets-webhook/settings/secrets/a
 
 ### 2. Sync secrets
 
-The job is manual (`workflow_dispatch`). Go to the repo's **Actions** tab → **Sync secrets & deploy to Vercel** → **Run workflow**: [https://github.com/abanuelo/frameio-sheets-webhook/settings/secrets/actions](https://github.com/abanuelo/frameio-sheets-webhook/settings/secrets/actions).
+The job is manual (`workflow_dispatch`). Go to the repo's **Actions** tab → **Sync secrets & deploy to Vercel** → **Run workflow**: [https://github.com/abanuelo/frameio-sheets-webhook/actions](https://github.com/abanuelo/frameio-sheets-webhook/actions).
 
 ![Run the workflow from the Actions tab](images/actions.png)
 
